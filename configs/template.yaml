@@ -1,0 +1,168 @@
+# ============================================================
+# 爬虫配置模板
+# 用法: uv run python -m crawler.cli configs/template.yaml
+# 本文件展示所有支持的配置项, 作为语法参考
+# ============================================================
+
+name: template
+
+# ── qBittorrent 连接 ─────────────────────────────────────────
+qb:
+  url: "http://localhost:8080"
+  user: "user"
+  password: "password"
+  category: "" # 默认分类; 可在 stage 中覆盖
+  timeout: 30 # 请求超时秒数
+  sequential_download: true
+  first_last_piece_prio: true
+  add_to_top_of_queue: true
+
+# ── Playwright 浏览器 ────────────────────────────────────────
+browser:
+  headless: false # 生产环境建议 true
+  args: ["--blink-settings=imagesEnabled=false"]
+
+# ══════════════════════════════════════════════════════════════
+# stages: 爬取步骤列表
+#
+# 核心概念:
+#   1. 每步从 input 获取上游资源列表
+#   2. 对每个资源, 根据 url_pattern 或 字段 构建 URL
+#   3. 用 fetcher 抓取 (playwright / httpx)
+#   4. 用 extract 从 HTML 中提取新资源
+#   5. 用 filter 过滤结果
+#   6. 结果存入 output_store[stage.id]
+#   7. 下一步通过 input 引用, 循环往复
+#
+# 第一步无 input, 用 urls / url_pattern+url_range 生成种子 URL
+# ══════════════════════════════════════════════════════════════
+stages:
+  # ────────── 第 1 步: 种子 URL + 正则提取 ─────────────────
+  # 无 input → url_pattern + url_range 自动生成 URL 列表
+  # ──────────────────────────────────────────────────────────
+  - id: ids
+    fetcher: playwright # 使用 Playwright (可渲染 JS)
+    concurrency: 3 # 并发上限
+    delay: 1.0 # 每次抓取后延时
+    url_pattern: "https://example.com/list?page={page}"
+    url_range:
+      name: page
+      start: 1
+      end: 3 # 生成 page=1,2 (end 不包含)
+      step: 1
+    security: false # 是否自动点击安全验证按钮
+    security_selector: ".enter-btn"
+    extract:
+      type: regex
+      pattern: '<a href="/detail/(\d+)">(.*?)</a>'
+      flags: [I, S] # 忽略大小写 + . 匹配换行
+      multiple: true # 返回所有匹配 (默认 true)
+    # regex 匹配组自动命名为 group_0, group_1, ...
+    resources: ["group_0", "group_1"]
+
+  # ────────── 第 2 步: 多提取规则 + 过滤 ──────────────────
+  # input 指向第 1 步的 id "ids"
+  # extract 可以是列表, 在同一页面用不同方法提取多种资源
+  # ──────────────────────────────────────────────────────────
+  - id: posts
+    input: ids
+    fetcher: playwright
+    concurrency: 3
+    delay: 1.0
+    url_pattern: "https://example.com/detail/{group_0}"
+    security: true
+    security_selector: ".enter-btn"
+    extract:
+      # 规则 1: CSS 多字段 — 提取帖子元信息
+      - type: css
+        selector: "div.post-item"
+        fields:
+          post_url:
+            selector: "a.post-link"
+            attribute: href # 取 href 属性, 否则取 text
+          title:
+            selector: "h2.post-title"
+          tags:
+            selector: "span.tag"
+            attribute: title
+            multiple: true # 返回列表
+          score:
+            selector: ".score span"
+            type: int # 转为整数
+          author:
+            selector: ".author-name"
+      # 规则 2: 正则 — 从同页面提取隐藏数据
+      - type: regex
+        pattern: 'data-id="(\d+)" data-type="(\w+)"'
+        flags: [I]
+        multiple: true
+    resources:
+      ["post_url", "title", "tags", "score", "author", "group_0", "group_1"]
+    filter:
+      - field: title
+        not_contains: "广告"
+      - any_of:
+          - field: tags
+            contains: "精华"
+          - all_of:
+              - field: score
+                gte: 100
+              - field: tags
+                contains: "推荐"
+
+  # ────────── 第 3 步: httpx + xpath ──────────────────────
+  # 使用上一步的 post_url 字段作为 URL (无 url_pattern)
+  # ──────────────────────────────────────────────────────────
+  - id: details
+    input: posts
+    fetcher: httpx
+    concurrency: 10 # httpx 默认并发 10
+    delay: 2.0
+    headers:
+      User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      Accept: "text/html,application/xhtml+xml"
+      Accept-Language: "zh-CN,zh;q=0.9,en;q=0.8"
+    retry:
+      max_retries: 10
+      retryable_codes: [429, 502, 503, 504] # 遇到这些状态码自动重试
+    extract:
+      type: xpath
+      selector: '//div[@class="content"]//a[contains(@href, "magnet")]'
+      attribute: href
+    resources: ["text"]
+
+  # ────────── 第 4 步: 最终磁力 + qBittorrent ────────────
+  # qb_send: true → 发送到 qBittorrent
+  # ──────────────────────────────────────────────────────────
+  - id: magnets
+    input: details
+    fetcher: httpx
+    url_pattern: "https://example.com/links/{text}"
+    extract:
+      type: regex
+      pattern: "(magnet:\\?xt=urn:btih:[a-fA-F0-9]{32})"
+      flags: [I]
+      multiple: true
+    resources: ["group_0"]
+    category: "" # 覆盖全局 qb.category
+    qb_send: true # 发送到 qBittorrent
+
+
+# ══════════════════════════════════════════════════════════════
+# 数据流:
+#   [种子 URL] ──▶ ids ──▶ posts ──▶ details ──▶ magnets ──▶ qB
+#                     │          │           │            │
+#                 group_0     post_url     text       group_0
+#                 group_1     title       (magnet)    (magnet)
+#                             tags
+#                             score
+#                             author
+#                             data-id
+#                             data-type
+#
+# extract 支持单条或列表:
+#   extract: {type: regex, ...}         ← 单条 (简写)
+#   extract:                            ← 多条
+#     - {type: css, ...}
+#     - {type: regex, ...}
+# ══════════════════════════════════════════════════════════════
