@@ -12,6 +12,9 @@ wheels/
 # ruff cache
 .ruff_cache/
 
+# pytest cache
+.pytest_cache/
+
 # pyright cache
 .pyright/
 
@@ -20,6 +23,9 @@ wheels/
 
 # Debug HTML dumps
 debug_*.html
+
+# Test fixtures (generated at runtime)
+tests/fixtures/
 
 # User-specific configuration
 user.yaml

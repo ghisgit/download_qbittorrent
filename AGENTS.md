@@ -48,12 +48,13 @@ uv run python -m crawler.cli --debug-save configs/template.yaml  # save HTML for
 - `-v` / `--verbose` — per-item fetch, extract, and filter decision logging
 - `--debug-save` — writes downloaded HTML to `debug_*.html` files for offline inspection
 
-## Lint & type check
+## Lint, type check & test
 
 ```bash
 uv run ruff check .                  # lint
 uv run ruff format --check .         # formatting
 uv run pyright .                     # type check
+uv run pytest                        # tests
 ```
 
 All commands must pass before committing.
