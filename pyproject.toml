@@ -24,6 +24,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["crawler"]
 
+[tool.pyright]
+typeCheckingMode = "basic"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120

@@ -12,6 +12,12 @@ wheels/
 # ruff cache
 .ruff_cache/
 
+# pyright cache
+.pyright/
+
+# Package metadata
+*.egg-info/
+
 # Debug HTML dumps
 debug_*.html
 
