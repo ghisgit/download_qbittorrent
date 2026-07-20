@@ -82,7 +82,7 @@ class FilterRule:
 @dataclass
 class StageConfig:
     id: str
-    input: str | None = None
+    input: str | list[str] | None = None
     urls: list[str] = dc_field(default_factory=list)
     url_pattern: str = ""
     url_range: dict[str, Any] | None = None

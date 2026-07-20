@@ -39,7 +39,24 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
             print(f"\n=== Stage: {stage.id} ===")
 
             input_items: list[dict[str, Any]] = []
-            if stage.input:
+            if isinstance(stage.input, list):
+                for src in stage.input:
+                    input_items.extend(output_store.get(src, []))
+                if not input_items:
+                    print(f"[{stage.id}] 所有上游无数据, 跳过")
+                    continue
+                # dedup by _url across multiple sources
+                seen_urls: set[str] = set()
+                deduped = []
+                for item in input_items:
+                    key = item.get("_url")
+                    if key:
+                        if key in seen_urls:
+                            continue
+                        seen_urls.add(key)
+                    deduped.append(item)
+                input_items = deduped
+            elif stage.input:
                 input_items = output_store.get(stage.input, [])
                 if not input_items:
                     print(f"[{stage.id}] 上游无数据, 跳过")
