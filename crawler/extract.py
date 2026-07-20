@@ -122,28 +122,53 @@ def _extract_css(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[st
     return results
 
 
+def _xpath_value(el: Any, attr: str) -> str | None:
+    if attr:
+        val = el.get(attr)
+    elif hasattr(el, "text"):
+        val = (el.text or "").strip()
+    else:
+        val = str(el).strip()
+    return val or None
+
+
 def _extract_xpath(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[str, Any]]:
     from lxml import html as lh
 
     tree = lh.fromstring(html)
+
+    if cfg.fields:
+        root_elements = tree.xpath(cfg.selector) if cfg.selector else [tree]
+        if crawler.settings.verbose:
+            print(f"  [extract] xpath '{cfg.selector}' \u2192 {len(root_elements)} root elements")
+        results = []
+        for el in root_elements:
+            item: dict[str, Any] = {"_source": source_url}
+            for name, fe in cfg.fields.items():
+                if fe.selector:
+                    sub_els = el.xpath(fe.selector)
+                    vals = []
+                    for sub in sub_els:
+                        v = _xpath_value(sub, fe.attribute)
+                        if v is not None:
+                            vals.append(int(v) if fe.type == "int" else v)
+                    if vals:
+                        item[name] = vals if fe.multiple else vals[0]
+            if len(item) > 1:
+                if crawler.settings.verbose:
+                    display = {k: v for k, v in item.items() if not k.startswith("_")}
+                    print(f"  [extract] item: {display}")
+                results.append(item)
+        return results
+
     elements = tree.xpath(cfg.selector)
     if crawler.settings.verbose:
         print(f"  [extract] xpath '{cfg.selector}' \u2192 {len(elements)} elements")
     results = []
     for el in elements:
-        if cfg.attribute:
-            val = el.get(cfg.attribute)
-        elif hasattr(el, "text"):
-            val = (el.text or "").strip()
-        else:
-            val = str(el).strip()
+        val = _xpath_value(el, cfg.attribute)
         if val:
-            results.append(
-                {
-                    "text": val,
-                    "_source": source_url,
-                }
-            )
+            results.append({"text": val, "_source": source_url})
     if crawler.settings.verbose and results:
         for r in results:
             print(f"  [extract] item: {r.get('text', '')[:60]}")
