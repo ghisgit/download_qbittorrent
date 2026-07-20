@@ -70,6 +70,20 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
                 continue
 
             print(f"[{stage.id}] 输入: {len(input_items)} 条")
+            if stage.dedup_by:
+                before = len(input_items)
+                seen: set[str] = set()
+                deduped = []
+                for item in input_items:
+                    key = item.get(stage.dedup_by)
+                    if key is not None:
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                    deduped.append(item)
+                input_items = deduped
+                if before != len(input_items):
+                    print(f"[{stage.id}] 按 {stage.dedup_by} 去重: {before} -> {len(input_items)} 条")
             if stage.resources:
                 print(f"[{stage.id}] 资源: {', '.join(stage.resources)}")
             if crawler.settings.verbose and len(input_items) <= 10:
