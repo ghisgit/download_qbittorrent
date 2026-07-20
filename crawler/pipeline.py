@@ -39,7 +39,24 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
             print(f"\n=== Stage: {stage.id} ===")
 
             input_items: list[dict[str, Any]] = []
-            if stage.input:
+            if isinstance(stage.input, list):
+                for src in stage.input:
+                    input_items.extend(output_store.get(src, []))
+                if not input_items:
+                    print(f"[{stage.id}] 所有上游无数据, 跳过")
+                    continue
+                # dedup by _url across multiple sources
+                seen_urls: set[str] = set()
+                deduped = []
+                for item in input_items:
+                    key = item.get("_url")
+                    if key:
+                        if key in seen_urls:
+                            continue
+                        seen_urls.add(key)
+                    deduped.append(item)
+                input_items = deduped
+            elif stage.input:
                 input_items = output_store.get(stage.input, [])
                 if not input_items:
                     print(f"[{stage.id}] 上游无数据, 跳过")
@@ -53,6 +70,20 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
                 continue
 
             print(f"[{stage.id}] 输入: {len(input_items)} 条")
+            if stage.dedup_by:
+                before = len(input_items)
+                seen: set[str] = set()
+                deduped = []
+                for item in input_items:
+                    key = item.get(stage.dedup_by)
+                    if key is not None:
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                    deduped.append(item)
+                input_items = deduped
+                if before != len(input_items):
+                    print(f"[{stage.id}] 按 {stage.dedup_by} 去重: {before} -> {len(input_items)} 条")
             if stage.resources:
                 print(f"[{stage.id}] 资源: {', '.join(stage.resources)}")
             if crawler.settings.verbose and len(input_items) <= 10:

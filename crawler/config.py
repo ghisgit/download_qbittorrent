@@ -82,7 +82,7 @@ class FilterRule:
 @dataclass
 class StageConfig:
     id: str
-    input: str | None = None
+    input: str | list[str] | None = None
     urls: list[str] = dc_field(default_factory=list)
     url_pattern: str = ""
     url_range: dict[str, Any] | None = None
@@ -98,6 +98,7 @@ class StageConfig:
     category: str = ""
     concurrency: int = 0
     delay: float = 0.0
+    dedup_by: str | None = None
 
 
 @dataclass
@@ -245,6 +246,7 @@ def load_config(path: str | Path) -> CrawlerConfig:
                 category=s.get("category", ""),
                 concurrency=s.get("concurrency", 0),
                 delay=s.get("delay", 0.0),
+                dedup_by=s.get("dedup_by"),
             )
         )
 

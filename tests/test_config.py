@@ -64,6 +64,28 @@ class TestFilterParse:
         assert len(rules[1].any_of[1].all_of) == 2
 
 
+class TestStageInput:
+    def test_single_str(self):
+        from crawler.config import StageConfig
+
+        s = StageConfig(id="s", input="upstream")
+        assert s.input == "upstream"
+        assert isinstance(s.input, str)
+
+    def test_list(self):
+        from crawler.config import StageConfig
+
+        s = StageConfig(id="s", input=["a", "b"])
+        assert s.input == ["a", "b"]
+        assert isinstance(s.input, list)
+
+    def test_none_default(self):
+        from crawler.config import StageConfig
+
+        s = StageConfig(id="s")
+        assert s.input is None
+
+
 class TestMinimalConfig:
     def test_load(self, minimal_config: CrawlerConfig):
         assert minimal_config.name == "test"
