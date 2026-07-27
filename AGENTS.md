@@ -2,7 +2,7 @@
 
 ## Stack
 
-- Python 3.12+, managed with **uv** (lockfile: `uv.lock`)
+- Python 3.14+, managed with **uv** (lockfile: `uv.lock`)
 - Dependencies: `httpx`, `bs4` (beautifulsoup4), `lxml`, `playwright`, `playwright-stealth`, `pyyaml`
 - Async throughout (asyncio)
 - Linting: `ruff` (check + format)
