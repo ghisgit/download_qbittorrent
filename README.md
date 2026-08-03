@@ -27,6 +27,55 @@ playwright install chromium
 uv run python -m crawler.cli configs/template.yaml
 ```
 
+## Docker
+
+Package the crawler as a container so it can run on any Docker host without rebuilding the environment — just mount your config file.
+
+### Build
+
+```bash
+docker build -t download-qbittorrent .
+```
+
+### Run (docker compose)
+
+```bash
+export UID=$(id -u) GID=$(id -g)   # so files written by the container are owned by you
+docker compose run --rm crawler                # runs /app/user.yaml by default
+docker compose run --rm crawler -v             # add -v for verbose logging
+docker compose run --rm crawler /app/user.yaml # specify a config explicitly
+```
+
+Compose sets `network_mode: host`, so `qb.url`'s `http://localhost:8080` reaches the host's qBittorrent directly — no YAML changes needed (Linux only).
+
+### Mount contract
+
+| Host path      | Container path  | Description                                          |
+| -------------- | --------------- | ---------------------------------------------------- |
+| `./user.yaml`  | `/app/user.yaml`| Read-only personal config (contains qB credentials)  |
+| `./work/`      | `/app/work`     | Working directory; `--debug-save` HTML lands in `./work/` on the host |
+
+For daily runs only the personal `user.yaml` needs mounting; the `configs/` template is for syntax reference and is not required.
+
+### Run (docker run)
+
+```bash
+mkdir -p work
+docker run --rm --network host --user $(id -u):$(id -g) \
+  -v $PWD/user.yaml:/app/user.yaml:ro \
+  -v $PWD/work:/app/work \
+  -w /app/work \
+  download-qbittorrent /app/user.yaml
+```
+
+### Notes
+
+- **Headless only**: Chromium in the container runs with `headless: true` only; do visual debugging on the host
+- **UID matching**: without `--user $(id -u):$(id -g)`, files written by the container are owned by root
+- **Image size ~1GB**: includes Chromium and its system libraries
+- **Migration**: `docker save download-qbittorrent | gzip > img.tgz`, then `gunzip -c img.tgz | docker load` on the target host
+- **No secrets in the image**: `user.yaml` is in `.dockerignore` and injected at runtime via mount
+
 ## CLI
 
 ```
@@ -106,6 +155,9 @@ Each stage receives items from its `input` stage, fetches each item's URL, extra
 │   └── qb.py          # qBittorrent API client
 ├── configs/
 │   └── template.yaml  # Configuration template
+├── Dockerfile
+├── docker-compose.yml
+├── .dockerignore
 ├── pyproject.toml
 └── uv.lock
 ```

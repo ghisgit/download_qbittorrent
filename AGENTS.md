@@ -15,6 +15,22 @@ uv sync                            # install dependencies
 playwright install chromium        # required for Playwright fetcher
 ```
 
+## Docker
+
+The project can be run as a container so it works on any Docker host without rebuilding the environment.
+
+```bash
+docker build -t download-qbittorrent .   # build image (installs Chromium, ~1GB)
+export UID=$(id -u) GID=$(id -g)         # so container-written files are owned by you
+docker compose run --rm crawler          # runs /app/user.yaml (mounted from ./user.yaml)
+```
+
+- Compose sets `network_mode: host` so `qb.url` `http://localhost:8080` reaches the host's qBittorrent directly (Linux only).
+- Only `./user.yaml` needs mounting (`:ro`); `configs/` is not copied into the image.
+- Debug HTML from `--debug-save` is written to `./work/` (mounted at `/app/work`).
+- Container Chromium is headless-only; use `browser.headless: false` debugging on the host.
+- `user.yaml` is in `.dockerignore` so credentials are never baked into the image.
+
 ## Entrypoint
 
 The CLI entrypoint is `crawler.cli`:

@@ -1,0 +1,15 @@
+.git
+.venv
+__pycache__
+*.py[oc]
+*.egg-info
+.ruff_cache
+.pytest_cache
+.pyright
+build
+dist
+debug_*.html
+work
+tests/fixtures
+user.yaml
+configs
