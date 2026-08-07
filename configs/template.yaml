@@ -112,11 +112,14 @@ stages:
                 contains: "推荐"
 
   # ────────── 第 3 步: httpx + xpath ──────────────────────
-  # 使用上一步的 post_url 字段作为 URL (无 url_pattern)
+  # 使用上一步的 post_url 字段作为 URL:
+  # url_pattern 里的 {post_url} 会被替换成每条的 post_url 值
+  # (若 post_url 是相对路径, 会自动基于来源 URL 转成绝对地址)
   # ──────────────────────────────────────────────────────────
   - id: details
     input: posts
     fetcher: httpx
+    url_pattern: "{post_url}" # 用 post_url 字段构建待抓取 URL
     concurrency: 10 # httpx 默认并发 10
     delay: 2.0
     headers:
