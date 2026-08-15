@@ -12,6 +12,22 @@ import crawler
 
 from .config import CrawlerConfig, StageConfig
 
+# ── helpers ──────────────────────────────────────────────────────────
+
+
+def debug_enabled(stage: StageConfig) -> bool:
+    """Per-stage debug_save overrides the global CLI --debug-save flag."""
+    if stage.debug_save is not None:
+        return stage.debug_save
+    return crawler.settings.debug_save
+
+
+def save_debug_html(stage: StageConfig, url: str, html: str) -> None:
+    safe = url.replace("://", "_").replace("/", "_").replace("?", "_")[:80]
+    Path(f"debug_{stage.id}_{safe}.html").write_text(html, encoding="utf-8")
+    print(f"  [fetch]  saved to debug_{stage.id}_{safe}.html")
+
+
 # ── Playwright fetcher ──────────────────────────────────────────────
 
 
@@ -56,24 +72,44 @@ class PlaywrightFetcher:
         stage: StageConfig,
         sem: asyncio.Semaphore,
     ) -> str:
-        async with sem:
-            print(f"  [fetch] playwright GET {url}")
-            if self._context is None:
-                raise RuntimeError("Playwright context not initialized")
-            page = await self._context.new_page()
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=120000)
-                if stage.security:
-                    await self._handle_security(page, stage)
-                html = await page.content()
-                print(f"  [fetch] -> {len(html)} bytes")
-                if crawler.settings.debug_save:
-                    safe = url.replace("://", "_").replace("/", "_").replace("?", "_")[:80]
-                    Path(f"debug_{safe}.html").write_text(html, encoding="utf-8")
-                    print(f"  [fetch]  saved to debug_{safe}.html")
-                return html
-            finally:
-                await page.close()
+        retry_cfg = stage.retry
+        max_retries = retry_cfg.max_retries if retry_cfg else 1
+        retryable = retry_cfg.retryable_codes if retry_cfg else set()
+
+        for attempt in range(max_retries):
+            should_retry = False
+            async with sem:
+                print(f"  [fetch] playwright GET {url}  (attempt {attempt + 1}/{max_retries})")
+                if self._context is None:
+                    raise RuntimeError("Playwright context not initialized")
+                page = await self._context.new_page()
+                try:
+                    try:
+                        resp = await page.goto(url, wait_until="domcontentloaded", timeout=120000)
+                    except Exception as e:
+                        print(f"  [fetch] error {url}: {e}")
+                        should_retry = True
+                    if should_retry:
+                        pass
+                    elif resp is not None and resp.status in retryable:
+                        print(f"  [fetch] HTTP {resp.status} {url}")
+                        should_retry = True
+                    else:
+                        if stage.security:
+                            await self._handle_security(page, stage)
+                        html = await page.content()
+                        print(f"  [fetch] -> {len(html)} bytes")
+                        if debug_enabled(stage):
+                            save_debug_html(stage, url, html)
+                        return html
+                finally:
+                    await page.close()
+            if should_retry:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2**attempt + random.random())
+                else:
+                    return ""
+        return ""
 
     async def _handle_security(self, page: Page, stage: StageConfig) -> None:
         if not stage.security_selector:
@@ -128,10 +164,8 @@ class HttpxFetcher:
                     resp = await self._client.get(url, headers=stage.headers)
                     resp.raise_for_status()
                     print(f"  [fetch] -> HTTP {resp.status_code}, {len(resp.text)} bytes")
-                    if crawler.settings.debug_save:
-                        safe = url.replace("://", "_").replace("/", "_").replace("?", "_")[:80]
-                        Path(f"debug_{safe}.html").write_text(resp.text, encoding="utf-8")
-                        print(f"  [fetch]  saved to debug_{safe}.html")
+                    if debug_enabled(stage):
+                        save_debug_html(stage, url, resp.text)
                     return resp.text
             except httpx.HTTPStatusError as e:
                 code = e.response.status_code

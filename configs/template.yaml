@@ -38,12 +38,19 @@ browser:
 # ══════════════════════════════════════════════════════════════
 stages:
   # ────────── 第 1 步: 种子 URL + 正则提取 ─────────────────
-  # 无 input → url_pattern + url_range 自动生成 URL 列表
+  # 无 input → 用 url_pattern + url_range 自动生成 URL 列表
+  # 或者直接用 urls 静态列举:
+  #   urls: ["https://example.com/list?page=1", ".../page=2"]
   # ──────────────────────────────────────────────────────────
   - id: ids
     fetcher: playwright # 使用 Playwright (可渲染 JS)
     concurrency: 3 # 并发上限
     delay: 1.0 # 每次抓取后延时
+    # retry: playwright/httpx 均支持 (默认 1 次不重试)
+    retry:
+      max_retries: 3
+      retryable_codes: [429, 502, 503, 504]
+    debug_save: true # 覆盖全局 --debug-save: 本 stage 强制保存 HTML
     url_pattern: "https://example.com/list?page={page}"
     url_range:
       name: page
@@ -60,13 +67,34 @@ stages:
     # regex 匹配组自动命名为 group_0, group_1, ...
     resources: ["group_0", "group_1"]
 
+  # ────────── 第 1b 步: 第二个种子源 (演示多 input) ──────
+  # 与 ids 相同, 但抓取不同的页, 作为 posts 的第二个上游
+  # ──────────────────────────────────────────────────────────
+  - id: ids2
+    fetcher: playwright
+    concurrency: 3
+    delay: 1.0
+    url_pattern: "https://example.com/list?page={page}"
+    url_range:
+      name: page
+      start: 3
+      end: 5 # 生成 page=3,4
+      step: 1
+    extract:
+      type: regex
+      pattern: '<a href="/detail/(\d+)">(.*?)</a>'
+      flags: [I, S]
+      multiple: true
+    resources: ["group_0", "group_1"]
+
   # ────────── 第 2 步: 多提取规则 + 过滤 ──────────────────
-  # input 指向第 1 步的 id "ids"
-  # extract 可以是列表, 在同一页面用不同方法提取多种资源
+  # input 可以是单个 stage id, 也可以是列表:
+  #   input: [ids, ids2] → 拼接多个上游, 按 _url 去重后抓取
   # dedup_by: 在抓取前按字段去重输入 (如 group_0), 避免重复请求
   # ──────────────────────────────────────────────────────────
   - id: posts
-    input: ids
+    input: [ids, ids2]
+    dedup_by: group_0 # 两个源可能抓到相同 id, 先去重再抓详情页
     fetcher: playwright
     concurrency: 3
     delay: 1.0
@@ -80,28 +108,39 @@ stages:
         fields:
           post_url:
             selector: "a.post-link"
-            attribute: href # 取 href 属性, 否则取 text
+            attribute: href # 取 href 属性; 空/"text" 取文本
+          id:
+            selector: "a.post-link"
+            attribute: href
+            pattern: "post-(\\d+)" # 对 href 做正则提取 (有组取组1), 可再配 type: int
+            flags: [I]
+            type: int
           title:
             selector: "h2.post-title"
           tags:
             selector: "span.tag"
             attribute: title
-            multiple: true # 返回列表
+            multiple: true # 返回列表 (多值时逐个应用 pattern)
           score:
             selector: ".score span"
-            type: int # 转为整数
+            type: int # 转为整数 (pattern 之后执行)
           author:
             selector: ".author-name"
       # 规则 2: 正则 — 从同页面提取隐藏数据
+      # 顶层 multiple: false 表示只保留第一个匹配 (css/xpath/regex 均生效)
       - type: regex
         pattern: 'data-id="(\d+)" data-type="(\w+)"'
         flags: [I]
         multiple: true
     resources:
-      ["post_url", "title", "tags", "score", "author", "group_0", "group_1"]
+      ["post_url", "id", "title", "tags", "score", "author", "group_0", "group_1"]
     filter:
       - field: title
         not_contains: "广告"
+      - field: tags
+        not_in: ["低质量", "垃圾"] # 字段值不在列表中
+      - field: title
+        eq: "今日推荐" # 字段值完全等于
       - any_of:
           - field: tags
             contains: "精华"
@@ -129,6 +168,7 @@ stages:
     retry:
       max_retries: 10
       retryable_codes: [429, 502, 503, 504] # 遇到这些状态码自动重试
+    # debug_save: false # 覆盖全局: 本 stage 即使加了 --debug-save 也不保存
     extract:
       type: xpath
       selector: '//div[@class="content"]//a[contains(@href, "magnet")]'
@@ -154,19 +194,45 @@ stages:
 
 # ══════════════════════════════════════════════════════════════
 # 数据流:
-#   [种子 URL] ──▶ ids ──▶ posts ──▶ details ──▶ magnets ──▶ qB
-#                     │          │           │            │
-#                 group_0     post_url     text       group_0
-#                 group_1     title       (magnet)    (magnet)
-#                             tags
-#                             score
-#                             author
-#                             data-id
-#                             data-type
+#   [种子 URL] ──▶ ids ─┐
+#                       ├──▶ posts ──▶ details ──▶ magnets ──▶ qB
+#   [种子 URL] ──▶ ids2 ┘   (input 列表)      │            │
+#                                   post_url     text       group_0
+#                                   title       (magnet)    (magnet)
+#                                   tags
+#                                   score
+#                                   author
+#                                   data-id
+#                                   data-type
 #
 # extract 支持单条或列表:
 #   extract: {type: regex, ...}         ← 单条 (简写)
 #   extract:                            ← 多条
 #     - {type: css, ...}
 #     - {type: regex, ...}
+#
+# 多字段 extract 的字段级配置 (css / xpath):
+#   selector: 子元素定位 (缺省取当前元素)
+#   attribute: 取值来源 — 空/"text" 取文本, 否则取属性值 (如 href)
+#   pattern:   对原始值做正则提取, 有捕获组时取组1; 无匹配则该字段缺失
+#   flags:     [I, S, M] 正则标志
+#   type:      "int" 转换 (在 pattern 之后执行)
+#   multiple:  true 时返回列表, 并对每个子元素逐个应用上述管线
+#
+# 顶层 multiple: 默认 true 返回全部匹配; 设为 false 仅保留第一个匹配
+#
+# input 支持单条或列表:
+#   input: posts                       ← 单个上游
+#   input: [ids, ids2]                 ← 多个上游拼接, 按 _url 去重
+#   dedup_by: group_0                  ← 按字段去重 (可选)
+#
+# debug_save: 每 stage 可覆盖 CLI 全局 --debug-save:
+#   未设置      → 跟随 --debug-save
+#   debug_save: true   → 即使不加 --debug-save 也保存 (保存到 debug_{stage.id}_*.html)
+#   debug_save: false  → 即使加了 --debug-save 也不保存
+#
+# retry: playwright 与 httpx 均支持 (默认不重试):
+#   retry:
+#     max_retries: 3
+#     retryable_codes: [429, 502, 503, 504]   # 命中状态码或加载异常时退避重试
 # ══════════════════════════════════════════════════════════════

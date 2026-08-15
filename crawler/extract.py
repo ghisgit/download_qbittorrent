@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 
 import crawler
 
-from .config import _UNSET, ExtractConfig, FilterCondition, FilterRule
+from .config import _UNSET, ExtractConfig, FieldExtract, FilterCondition, FilterRule
 
 
 def extract(html: str, cfg: ExtractConfig, source_url: str = "") -> list[dict[str, Any]]:
@@ -35,6 +35,8 @@ def _compile_flags(flags: list[str]) -> int:
 def _extract_regex(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[str, Any]]:
     flag = _compile_flags(cfg.flags)
     matches = re.findall(cfg.pattern, html, flag)
+    if not cfg.multiple:
+        matches = matches[:1]
     if crawler.settings.verbose:
         pattern_short = cfg.pattern[:60]
         print(f"  [extract] regex '{pattern_short}' \u2192 {len(matches)} matches")
@@ -54,8 +56,32 @@ def _extract_regex(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[
 
 
 def _single_value(el: Any, attr: str) -> str | None:
-    val = el.get(attr) if attr else el.get_text(strip=True)
+    val = el.get(attr) if attr and attr != "text" else el.get_text(strip=True)
     return str(val).strip() if val else None
+
+
+def _finalize_value(raw: str | None, fe: FieldExtract) -> Any:
+    """Value pipeline: regex pattern → int cast.  Returns None if extraction fails."""
+    if raw is None:
+        return None
+    val: str = raw
+    if fe.pattern:
+        m = re.search(fe.pattern, val, _compile_flags(fe.flags))
+        if not m:
+            return None
+        val = m.group(0)
+        if m.lastindex:
+            for gi in range(1, m.lastindex + 1):
+                g = m.group(gi)
+                if g is not None:
+                    val = g
+                    break
+    if fe.type == "int":
+        try:
+            return int(val)
+        except ValueError:
+            return None
+    return val
 
 
 def _extract_value(el: Any, attr: str, multiple: bool) -> str | list[str] | None:
@@ -81,6 +107,8 @@ def _extract_value(el: Any, attr: str, multiple: bool) -> str | list[str] | None
 def _extract_css(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[str, Any]]:
     soup = BeautifulSoup(html, "lxml")
     elements = soup.select(cfg.selector)
+    if not cfg.multiple:
+        elements = elements[:1]
     if crawler.settings.verbose:
         print(f"  [extract] css selector '{cfg.selector}' \u2192 {len(elements)} elements")
 
@@ -94,17 +122,17 @@ def _extract_css(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[st
                     sub_els = el.select(fe.selector) if fe.selector else []
                     vals = []
                     for sub in sub_els:
-                        v = _single_value(sub, fe.attribute)
+                        v = _finalize_value(_single_value(sub, fe.attribute), fe)
                         if v is not None:
-                            vals.append(int(v) if fe.type == "int" else v)
+                            vals.append(v)
                     if vals:
-                        item[name] = vals if fe.multiple else vals[0]
+                        item[name] = vals
                 else:
                     sub_el = el.select_one(fe.selector) if fe.selector else el
                     if sub_el:
-                        v = _single_value(sub_el, fe.attribute)
+                        v = _finalize_value(_single_value(sub_el, fe.attribute), fe)
                         if v is not None:
-                            item[name] = int(v) if fe.type == "int" else v
+                            item[name] = v
             if len(item) > 1:
                 if crawler.settings.verbose:
                     display = {k: v for k, v in item.items() if not k.startswith("_")}
@@ -123,7 +151,7 @@ def _extract_css(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[st
 
 
 def _xpath_value(el: Any, attr: str) -> str | None:
-    if attr:
+    if attr and attr != "text":
         val = el.get(attr)
     elif hasattr(el, "text"):
         val = (el.text or "").strip()
@@ -139,6 +167,8 @@ def _extract_xpath(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[
 
     if cfg.fields:
         root_elements = tree.xpath(cfg.selector) if cfg.selector else [tree]
+        if not cfg.multiple:
+            root_elements = root_elements[:1]
         if crawler.settings.verbose:
             print(f"  [extract] xpath '{cfg.selector}' \u2192 {len(root_elements)} root elements")
         results = []
@@ -149,9 +179,9 @@ def _extract_xpath(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[
                     sub_els = el.xpath(fe.selector)
                     vals = []
                     for sub in sub_els:
-                        v = _xpath_value(sub, fe.attribute)
+                        v = _finalize_value(_xpath_value(sub, fe.attribute), fe)
                         if v is not None:
-                            vals.append(int(v) if fe.type == "int" else v)
+                            vals.append(v)
                     if vals:
                         item[name] = vals if fe.multiple else vals[0]
             if len(item) > 1:
@@ -162,6 +192,8 @@ def _extract_xpath(html: str, cfg: ExtractConfig, source_url: str) -> list[dict[
         return results
 
     elements = tree.xpath(cfg.selector)
+    if not cfg.multiple:
+        elements = elements[:1]
     if crawler.settings.verbose:
         print(f"  [extract] xpath '{cfg.selector}' \u2192 {len(elements)} elements")
     results = []
@@ -194,8 +226,13 @@ def _check_condition(item: dict[str, Any], cond: FilterCondition) -> bool:
         return False
     if cond.eq and val != cond.eq:
         return False
-    if cond.not_in and val in cond.not_in:
-        return False
+    if cond.not_in:
+        raw_val = item.get(cond.field)
+        if isinstance(raw_val, list):
+            if any(str(v) in cond.not_in for v in raw_val):
+                return False
+        elif val in cond.not_in:
+            return False
     if cond.gt is not _UNSET:
         try:
             if float(val) <= cond.gt:

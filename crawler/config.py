@@ -35,9 +35,11 @@ class RetryConfig:
 @dataclass
 class FieldExtract:
     selector: str = ""
-    attribute: str = ""
+    attribute: str = ""  # ""/text 取文本, 否则取属性值
     multiple: bool = False  # True ⇒ returns a list of values
     type: str = ""  # "int" to cast
+    pattern: str = ""  # regex applied to the raw value (group 1 preferred)
+    flags: list[str] = dc_field(default_factory=list)  # [I, S, M]
 
 
 @dataclass
@@ -99,6 +101,7 @@ class StageConfig:
     concurrency: int = 0
     delay: float = 0.0
     dedup_by: str | None = None
+    debug_save: bool | None = None
 
 
 @dataclass
@@ -120,6 +123,8 @@ def _parse_fields(raw: dict[str, Any] | None) -> dict[str, FieldExtract]:
             attribute=f_raw.get("attribute", ""),
             multiple=f_raw.get("multiple", False),
             type=f_raw.get("type", ""),
+            pattern=f_raw.get("pattern", ""),
+            flags=f_raw.get("flags", []),
         )
     return fields
 
@@ -247,6 +252,7 @@ def load_config(path: str | Path) -> CrawlerConfig:
                 concurrency=s.get("concurrency", 0),
                 delay=s.get("delay", 0.0),
                 dedup_by=s.get("dedup_by"),
+                debug_save=s.get("debug_save"),
             )
         )
 

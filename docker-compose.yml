@@ -3,9 +3,13 @@ name: download-qbittorrent
 services:
   crawler:
     build: .
+    image: crawler:local
     network_mode: host # localhost:8080 直达宿主机 qBittorrent, YAML 无需改动 (仅 Linux)
     user: "${UID:-1000}:${GID:-1000}" # 宿主机 UID 匹配, 保证 debug 文件所有权
     working_dir: /app/work # debug_*.html 输出到宿主机 ./work/
+    env_file:
+      - path: .env
+        required: false # 无 .env 也可运行 (需 docker compose >= 2.24)
     volumes:
       - ./user.yaml:/app/user.yaml:ro
       - ./work:/app/work

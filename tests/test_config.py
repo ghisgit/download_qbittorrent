@@ -92,3 +92,56 @@ class TestMinimalConfig:
         assert len(minimal_config.stages) == 1
         assert minimal_config.stages[0].id == "seed"
         assert minimal_config.stages[0].urls == ["https://example.com"]
+
+
+class TestParseFields:
+    def test_pattern_and_flags(self):
+        from crawler.config import _parse_fields
+
+        fields = _parse_fields(
+            {"id": {"selector": "a", "attribute": "href", "pattern": r"id=(\d+)", "flags": ["I"], "type": "int"}}
+        )
+        fe = fields["id"]
+        assert fe.selector == "a"
+        assert fe.attribute == "href"
+        assert fe.pattern == r"id=(\d+)"
+        assert fe.flags == ["I"]
+        assert fe.type == "int"
+
+    def test_defaults(self):
+        from crawler.config import _parse_fields
+
+        fields = _parse_fields({"t": {}})
+        fe = fields["t"]
+        assert fe.pattern == ""
+        assert fe.flags == []
+
+
+class TestDebugSave:
+    def test_none_default(self):
+        from crawler.config import StageConfig
+
+        s = StageConfig(id="s")
+        assert s.debug_save is None
+
+    def test_parse_true(self, tmp_path):
+        from crawler.config import load_config
+
+        p = tmp_path / "debug_true.yaml"
+        p.write_text(
+            "name: t\nstages:\n  - id: a\n    debug_save: true\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(p)
+        assert cfg.stages[0].debug_save is True
+
+    def test_parse_false(self, tmp_path):
+        from crawler.config import load_config
+
+        p = tmp_path / "debug_false.yaml"
+        p.write_text(
+            "name: t\nstages:\n  - id: a\n    debug_save: false\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(p)
+        assert cfg.stages[0].debug_save is False

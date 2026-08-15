@@ -33,3 +33,8 @@ tests/fixtures/
 
 # User-specific configuration
 user.yaml
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
