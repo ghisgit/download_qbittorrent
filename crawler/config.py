@@ -27,6 +27,13 @@ class BrowserConfig:
 
 
 @dataclass
+class CacheConfig:
+    enabled: bool = False  # 全局默认关闭, 通过配置开启
+    dir: str = "cache"  # 缓存目录 (相对工作目录)
+    ttl: int = 0  # 过期秒数, 0 = 永不过期
+
+
+@dataclass
 class RetryConfig:
     max_retries: int = 10
     retryable_codes: set[int] = dc_field(default_factory=lambda: {429, 502, 503, 504})
@@ -102,6 +109,7 @@ class StageConfig:
     delay: float = 0.0
     dedup_by: str | None = None
     debug_save: bool | None = None
+    cache: bool | None = None  # 覆盖全局 cache.enabled (None = 跟随全局)
 
 
 @dataclass
@@ -109,6 +117,7 @@ class CrawlerConfig:
     name: str
     browser: BrowserConfig = dc_field(default_factory=BrowserConfig)
     qb: QBConfig = dc_field(default_factory=QBConfig)
+    cache: CacheConfig = dc_field(default_factory=CacheConfig)
     stages: list[StageConfig] = dc_field(default_factory=list)
 
 
@@ -202,6 +211,13 @@ def load_config(path: str | Path) -> CrawlerConfig:
         args=browser_raw.get("args", ["--blink-settings=imagesEnabled=false"]),
     )
 
+    cache_raw = raw.get("cache", {})
+    cache = CacheConfig(
+        enabled=cache_raw.get("enabled", False),
+        dir=cache_raw.get("dir", "cache"),
+        ttl=cache_raw.get("ttl", 0),
+    )
+
     stages = []
     for s in raw.get("stages", []):
         extract_raw = s.get("extract", [])
@@ -253,6 +269,7 @@ def load_config(path: str | Path) -> CrawlerConfig:
                 delay=s.get("delay", 0.0),
                 dedup_by=s.get("dedup_by"),
                 debug_save=s.get("debug_save"),
+                cache=s.get("cache"),
             )
         )
 
@@ -260,6 +277,7 @@ def load_config(path: str | Path) -> CrawlerConfig:
         name=raw.get("name", "unnamed"),
         browser=browser,
         qb=qb,
+        cache=cache,
         stages=stages,
     )
 

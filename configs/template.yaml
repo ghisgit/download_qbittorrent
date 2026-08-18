@@ -22,6 +22,15 @@ browser:
   headless: false # 生产环境建议 true
   args: ["--blink-settings=imagesEnabled=false"]
 
+# ── HTML 响应缓存 ───────────────────────────────────────────
+# 按 URL 缓存抓到的 HTML, 重跑时命中缓存直接跳过 fetch
+# 缓存命中后 extract / filter / qb_send 照常执行
+# (qb 重复磁力由 qBittorrent 按 hash 自动忽略)
+cache:
+  enabled: false # 全局默认关闭, 置 true 开启
+  dir: "cache" # 缓存目录 (Docker 下落在挂载的 ./work/cache)
+  ttl: 0 # 过期秒数, 0 = 永不过期; 站点结构变化时删掉缓存目录即可
+
 # ══════════════════════════════════════════════════════════════
 # stages: 爬取步骤列表
 #
@@ -51,6 +60,7 @@ stages:
       max_retries: 3
       retryable_codes: [429, 502, 503, 504]
     debug_save: true # 覆盖全局 --debug-save: 本 stage 强制保存 HTML
+    cache: true # 覆盖全局 cache.enabled: 本 stage 单独开启缓存
     url_pattern: "https://example.com/list?page={page}"
     url_range:
       name: page
@@ -235,4 +245,8 @@ stages:
 #   retry:
 #     max_retries: 3
 #     retryable_codes: [429, 502, 503, 504]   # 命中状态码或加载异常时退避重试
+#
+# cache: 每 stage 可覆盖全局 cache.enabled (缺省跟随全局):
+#   cache: true  → 本 stage 开启 HTML 缓存
+#   cache: false → 本 stage 禁用缓存, 每次都抓取
 # ══════════════════════════════════════════════════════════════

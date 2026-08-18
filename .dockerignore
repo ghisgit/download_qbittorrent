@@ -10,6 +10,7 @@ build
 dist
 debug_*.html
 work
+cache
 tests/fixtures
 user.yaml
 configs
