@@ -29,6 +29,7 @@ work/*
 !work/.gitkeep
 
 # Crawler HTML cache
+cache
 cache/
 
 # Test fixtures (generated at runtime)
