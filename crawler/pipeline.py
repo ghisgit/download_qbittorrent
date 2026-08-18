@@ -6,6 +6,7 @@ from urllib.parse import urljoin
 
 import crawler
 
+from .cache import HtmlCache
 from .config import CrawlerConfig, expand_urls
 from .extract import apply_filter, extract
 from .fetch import HttpxFetcher, PlaywrightFetcher
@@ -34,17 +35,23 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
     if needs_qb:
         qb_client = await QBClient(config.qb).__aenter__()
 
+    html_cache = HtmlCache(config.cache)
+
     try:
         for stage in config.stages:
             print(f"\n=== Stage: {stage.id} ===")
 
             input_items: list[dict[str, Any]] = []
             if isinstance(stage.input, list):
+                merged: dict[str, int] = {}
                 for src in stage.input:
-                    input_items.extend(output_store.get(src, []))
+                    items = output_store.get(src, [])
+                    merged[src] = len(items)
+                    input_items.extend(items)
                 if not input_items:
                     print(f"[{stage.id}] 所有上游无数据, 跳过")
                     continue
+                before = len(input_items)
                 # dedup by _url across multiple sources
                 seen_urls: set[str] = set()
                 deduped = []
@@ -56,6 +63,10 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
                         seen_urls.add(key)
                     deduped.append(item)
                 input_items = deduped
+                detail = "+".join(f"{k}({v})" for k, v in merged.items())
+                print(
+                    f"[{stage.id}] 合并多 input {detail} = {before} 条, 按 _url 去重: {before} -> {len(input_items)} 条"
+                )
             elif stage.input:
                 input_items = output_store.get(stage.input, [])
                 if not input_items:
@@ -118,11 +129,19 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
                     if crawler.settings.verbose:
                         print(f"  [pipeline] -> fetch: {url}")
 
+                    cache_on = stage.cache if stage.cache is not None else config.cache.enabled
                     html = None
-                    if stage.fetcher == "playwright" and pw_fetcher:
-                        html = await pw_fetcher.fetch(url, stage, sem)
-                    elif stage.fetcher == "httpx" and hx_fetcher:
-                        html = await hx_fetcher.fetch(url, stage, sem)
+                    if cache_on:
+                        html = html_cache.get(url)
+                        if html is not None and crawler.settings.verbose:
+                            print(f"  [pipeline] 缓存命中: {url}")
+                    if html is None:
+                        if stage.fetcher == "playwright" and pw_fetcher:
+                            html = await pw_fetcher.fetch(url, stage, sem)
+                        elif stage.fetcher == "httpx" and hx_fetcher:
+                            html = await hx_fetcher.fetch(url, stage, sem)
+                        if html and cache_on:
+                            html_cache.put(url, html)
 
                     if not html:
                         return []

@@ -145,3 +145,43 @@ class TestDebugSave:
         )
         cfg = load_config(p)
         assert cfg.stages[0].debug_save is False
+
+
+class TestCacheConfig:
+    def test_defaults(self):
+        from crawler.config import CacheConfig
+
+        cfg = CacheConfig()
+        assert cfg.enabled is False
+        assert cfg.dir == "cache"
+        assert cfg.ttl == 0
+
+    def test_parse_global(self, tmp_path):
+        from crawler.config import load_config
+
+        p = tmp_path / "cache.yaml"
+        p.write_text(
+            "name: t\ncache:\n  enabled: true\n  dir: /tmp/my-cache\n  ttl: 3600\nstages:\n  - id: a\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(p)
+        assert cfg.cache.enabled is True
+        assert cfg.cache.dir == "/tmp/my-cache"
+        assert cfg.cache.ttl == 3600
+
+    def test_stage_none_default(self):
+        from crawler.config import StageConfig
+
+        s = StageConfig(id="s")
+        assert s.cache is None
+
+    def test_stage_override(self, tmp_path):
+        from crawler.config import load_config
+
+        p = tmp_path / "stage_cache.yaml"
+        p.write_text(
+            "name: t\nstages:\n  - id: a\n    cache: false\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(p)
+        assert cfg.stages[0].cache is False

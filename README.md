@@ -155,6 +155,7 @@ Each stage defines:
 | `resources`   | Fields this stage produces (for logging)                 |
 | `filter`      | Filter rules to drop unwanted items                      |
 | `dedup_by`    | Dedup input by this field before fetching                |
+| `cache`       | Override global `cache.enabled` for this stage (`true`/`false`) |
 | `debug_save`  | Override global `--debug-save` for this stage (`true`/`false`) |
 | `qb_send`     | Send extracted magnets to qBittorrent                    |
 | `category`    | Override the global `qb.category` for this stage         |
@@ -194,6 +195,32 @@ extract:
 ```
 
 Field-level options (`css`/`xpath` multi-field mode): `selector`, `attribute`, `pattern`, `flags`, `type` (`"int"`), `multiple`. Value pipeline: **attribute/text → regex (`pattern`) → cast (`type`)**; a field is omitted when its pattern misses.
+
+### Caching
+
+Fetched HTML is cached on disk by URL, so re-runs skip fetching entirely and replay extraction/filtering from cache. Off by default; enable globally:
+
+```yaml
+cache:
+  enabled: true    # enable globally
+  dir: "cache"     # cache directory (relative to workdir)
+  ttl: 86400       # expire after N seconds; 0 = never
+```
+
+Each stage can override the global setting (unset = follow global):
+
+```yaml
+- id: details
+  fetcher: httpx
+  cache: false     # always fetch, don't cache
+```
+
+Notes:
+
+- Cache hits skip the fetcher entirely — no network request, no retry, no security-click, no `--debug-save` dump
+- `qb_send` still runs on cached data; duplicate magnets are ignored by qBittorrent (dedup by hash)
+- When the site markup changes, delete the cache directory to avoid stale extractions
+- With Docker, `workdir` is `/app/work` so the cache lands in the mounted `./work/cache` on the host
 
 ### Data flow
 
