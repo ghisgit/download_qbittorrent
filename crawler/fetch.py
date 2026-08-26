@@ -124,6 +124,13 @@ class PlaywrightFetcher:
                 await btn.click()
                 await page.wait_for_load_state("networkidle", timeout=10000)
                 await asyncio.sleep(2)
+                print("  [playwright] 刷新页面")
+                await page.reload(wait_until="domcontentloaded", timeout=120000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=10000)
+                    await asyncio.sleep(2)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"  [playwright] 安全验证按钮点击异常: {e}")
 
