@@ -12,6 +12,8 @@ A config-driven async crawler engine that scrapes websites, extracts magnet link
 - **Config-driven** — all pipeline logic expressed in YAML, zero code changes to add a new crawler
 - **Per-stage control** — concurrency, delay, retry policy, category override per stage
 - **Rich filtering** — field matching (`contains`, `not_contains`, `eq`, `not_in`, numeric `gt`/`gte`/`lt`/`lte`) with `any_of` / `all_of` logical groups
+- **Filtered qB sends** — when both `filter` and `qb_send: true` are set, only items that pass the filter are sent to qBittorrent
+- **Per-item category** — `category` supports `{field}` templates resolved from current-stage resources or fields inherited from upstream stages
 - **Upstream data merge** — downstream stages carry forward all non-`_` fields from upstream items
 - **Verbose logging** — `-v` per-item fetch, extract, and filter decision logging
 
@@ -153,17 +155,49 @@ Each stage defines:
 | `headers`     | Extra HTTP headers (httpx only)                          |
 | `extract`     | Extraction rule(s) — single object or list               |
 | `resources`   | Fields this stage produces (for logging)                 |
-| `filter`      | Filter rules to drop unwanted items                      |
+| `filter`      | Filter rules to drop unwanted items; `qb_send` only sends survivors |
 | `dedup_by`    | Dedup input by this field before fetching                |
 | `cache`       | Override global `cache.enabled` for this stage (`true`/`false`) |
 | `debug_save`  | Override global `--debug-save` for this stage (`true`/`false`) |
-| `qb_send`     | Send extracted magnets to qBittorrent                    |
-| `category`    | Override the global `qb.category` for this stage         |
+| `qb_send`     | Send magnets from filtered results to qBittorrent        |
+| `category`    | Override the global `qb.category`; supports `{field}` templates |
 | `concurrency` | Max concurrent fetches (default: playwright=3, httpx=10) |
 | `delay`       | Seconds to wait after each fetch                         |
 | `retry`       | Retry policy (both playwright and httpx)                 |
 | `security`    | Auto-click security check buttons (playwright only)      |
 | `security_selector` | CSS selector of the security button to click        |
+
+### qBittorrent output
+
+`qb_send: true` sends magnets collected from the stage's results.  `filter` is applied first, so dropped items are never sent:
+
+```yaml
+- id: magnets
+  input: details
+  fetcher: httpx
+  url_pattern: "https://example.com/links/{text}"
+  extract:
+    type: regex
+    pattern: "(magnet:\\?xt=urn:btih:[a-fA-F0-9]{32})"
+    flags: [I]
+    multiple: true
+  resources: ["group_0"]
+  filter:
+    - field: group_0
+      contains: "magnet:"
+  category: "movie/{id}"   # current resource or upstream field
+  qb_send: true
+```
+
+`category` can be a literal string or a template containing `{field}` placeholders.  Placeholders are resolved per result from the merged item, so fields extracted in the current stage and fields inherited from the previous stage are both available.  Examples:
+
+```yaml
+category: "movie"            # fixed category
+category: "movie/{text}"     # current-stage resource or inherited field
+category: "movie/{id}"
+```
+
+If a placeholder is missing or resolves to an empty value, the global `qb.category` is used.  Results that resolve to different categories are grouped and added with separate qBittorrent requests.
 
 ### Extraction rules
 

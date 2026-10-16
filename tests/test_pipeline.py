@@ -2,8 +2,21 @@ from __future__ import annotations
 
 import asyncio
 
-from crawler.config import CacheConfig, CrawlerConfig, StageConfig
-from crawler.pipeline import _collect_magnets, run_pipeline
+from crawler.config import (
+    CacheConfig,
+    CrawlerConfig,
+    ExtractConfig,
+    FilterCondition,
+    FilterRule,
+    QBConfig,
+    StageConfig,
+)
+from crawler.pipeline import (
+    _collect_magnets,
+    _collect_magnets_by_category,
+    _resolve_category,
+    run_pipeline,
+)
 
 
 def _patch_fetch(monkeypatch):
@@ -103,3 +116,164 @@ class TestCollectMagnets:
         items = [{"magnets": ["magnet:?xt=urn:btih:abc", "magnet:?xt=urn:btih:def"]}]
         result = _collect_magnets(items)
         assert result == ["magnet:?xt=urn:btih:abc", "magnet:?xt=urn:btih:def"]
+
+
+class TestCategoryResolution:
+    def test_current_stage_resource_template(self):
+        item = {"text": "The Matrix"}
+        assert _resolve_category("movie/{text}", item, "default") == "movie/The Matrix"
+
+    def test_previous_stage_field_template(self):
+        item = {"id": 42}
+        assert _resolve_category("movie/{id}", item, "default") == "movie/42"
+
+    def test_literal_category_unchanged(self):
+        assert _resolve_category("movie", {"movie": "not-this"}, "default") == "movie"
+
+    def test_missing_field_falls_back_to_default(self):
+        assert _resolve_category("movie/{title}", {}, "default") == "default"
+
+    def test_empty_category_falls_back_to_default(self):
+        assert _resolve_category("", {"title": "x"}, "default") == "default"
+
+    def test_list_value_is_joined(self):
+        item = {"tags": ["action", "sci-fi"]}
+        assert _resolve_category("genre/{tags}", item, "default") == "genre/action,sci-fi"
+
+
+class TestCollectMagnetsByCategory:
+    def test_groups_and_preserves_order(self):
+        items = [
+            {"_url": "a", "group_0": "magnet:a", "text": "Action"},
+            {"_url": "b", "group_0": "magnet:b", "text": "Action"},
+            {"_url": "c", "group_0": "magnet:c", "text": "Comedy"},
+        ]
+        grouped = _collect_magnets_by_category(items, "movie/{text}", "default")
+        assert grouped == {
+            "movie/Action": ["magnet:a", "magnet:b"],
+            "movie/Comedy": ["magnet:c"],
+        }
+
+    def test_duplicate_magnets_only_once(self):
+        items = [
+            {"group_0": "magnet:a", "text": "Action"},
+            {"group_0": "magnet:a", "text": "Comedy"},
+        ]
+        grouped = _collect_magnets_by_category(items, "movie/{text}", "default")
+        assert grouped == {"movie/Action": ["magnet:a"]}
+
+    def test_literal_category_keeps_single_group(self):
+        items = [
+            {"group_0": "magnet:a", "text": "Action"},
+            {"group_0": "magnet:b", "text": "Comedy"},
+        ]
+        grouped = _collect_magnets_by_category(items, "movie", "default")
+        assert grouped == {"movie": ["magnet:a", "magnet:b"]}
+
+
+class TestQBSendFilterAndCategory:
+    def test_filter_gates_qb_send_and_uses_current_resource_category(self, monkeypatch):
+        html_by_url = {
+            "http://example.com/1": '<a data-category="Anime">magnet:?xt=urn:btih:aaa</a>',
+            "http://example.com/2": '<a data-category="skip">magnet:?xt=urn:btih:bbb</a>',
+            "http://example.com/3": '<a data-category="Movie">magnet:?xt=urn:btih:ccc</a>',
+        }
+
+        async def fake_fetch(self, url: str, stage, sem) -> str:
+            return html_by_url[url]
+
+        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+
+        added: list[tuple[str, list[str]]] = []
+
+        async def fake_add(self, magnets: list[str], category: str = "") -> int:
+            added.append((category, list(magnets)))
+            return len(magnets)
+
+        monkeypatch.setattr("crawler.pipeline.QBClient.add_magnets", fake_add)
+
+        cfg = CrawlerConfig(
+            name="t",
+            qb=QBConfig(url="http://localhost:8080", user="u", password="p"),
+            stages=[
+                StageConfig(
+                    id="magnets",
+                    urls=list(html_by_url),
+                    fetcher="httpx",
+                    extracts=[
+                        ExtractConfig(
+                            type="regex",
+                            pattern=r'data-category="([^"]+)">(magnet:[^<]+)<',
+                            multiple=True,
+                        )
+                    ],
+                    resources=["group_0", "group_1"],
+                    filter=[FilterRule(condition=FilterCondition(field="group_0", not_in=["skip"]))],
+                    category="movie/{group_0}",
+                    qb_send=True,
+                )
+            ],
+        )
+
+        asyncio.run(run_pipeline(cfg))
+
+        assert added == [
+            ("movie/Anime", ["magnet:?xt=urn:btih:aaa"]),
+            ("movie/Movie", ["magnet:?xt=urn:btih:ccc"]),
+        ]
+
+    def test_category_can_use_previous_stage_resource(self, monkeypatch):
+        async def fake_fetch(self, url: str, stage, sem) -> str:
+            if stage.id == "list":
+                return '<a data-id="7" data-name="Anime">item</a>'
+            return '<a data-magnet="magnet:?xt=urn:btih:aaa">item</a>'
+
+        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+
+        added: list[tuple[str, list[str]]] = []
+
+        async def fake_add(self, magnets: list[str], category: str = "") -> int:
+            added.append((category, list(magnets)))
+            return len(magnets)
+
+        monkeypatch.setattr("crawler.pipeline.QBClient.add_magnets", fake_add)
+
+        cfg = CrawlerConfig(
+            name="t",
+            qb=QBConfig(url="http://localhost:8080", user="u", password="p"),
+            stages=[
+                StageConfig(
+                    id="list",
+                    urls=["http://example.com/list"],
+                    fetcher="httpx",
+                    extracts=[
+                        ExtractConfig(
+                            type="regex",
+                            pattern=r'data-id="(\d+)" data-name="(\w+)"',
+                            multiple=True,
+                        )
+                    ],
+                    resources=["group_0", "group_1"],
+                ),
+                StageConfig(
+                    id="magnets",
+                    input="list",
+                    fetcher="httpx",
+                    url_pattern="http://example.com/detail/{group_0}",
+                    extracts=[
+                        ExtractConfig(
+                            type="regex",
+                            pattern=r'data-magnet="(magnet:[^"]+)"',
+                            multiple=True,
+                        )
+                    ],
+                    resources=["group_0"],
+                    category="movie/{group_1}",
+                    qb_send=True,
+                ),
+            ],
+        )
+
+        asyncio.run(run_pipeline(cfg))
+
+        assert added == [("movie/Anime", ["magnet:?xt=urn:btih:aaa"])]

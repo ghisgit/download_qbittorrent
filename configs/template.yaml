@@ -198,7 +198,15 @@ stages:
       flags: [I]
       multiple: true
     resources: ["group_0"]
-    category: "" # 覆盖全局 qb.category
+    # filter 在 qb_send 之前执行: 只有通过 filter 的结果才会发送到 qBittorrent
+    filter:
+      - field: group_0
+        contains: "magnet:"
+    # category 支持 {字段} 模板, 字段可来自本步 resources, 也可来自上一步 input 合并下来的字段
+    # 例如: category: "movie/{id}"       (上一步字段)
+    #       category: "movie/{group_0}"  (本步资源)
+    # 留空则使用全局 qb.category; 字段缺失/为空时回退全局 qb.category
+    category: "movie/{id}"
     qb_send: true # 发送到 qBittorrent
 
 

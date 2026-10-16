@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from string import Formatter
 from typing import Any
 from urllib.parse import urljoin
 
@@ -194,10 +195,15 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
             print(f"[{stage.id}] 提取到 {len(results)} 条数据")
             output_store[stage.id] = results
 
+            # results has already passed stage.filter above; qb_send only sees
+            # items that survived the filter.
             if stage.qb_send and results:
-                stage_magnets = _collect_magnets(results)
-                if stage_magnets:
-                    cat = stage.category or config.qb.category
+                grouped = _collect_magnets_by_category(
+                    results,
+                    category=stage.category,
+                    default_category=config.qb.category,
+                )
+                for cat, stage_magnets in grouped.items():
                     print(f"[{stage.id}] 发送到 qBittorrent ({len(stage_magnets)} 个磁力, 分类={cat})")
                     assert qb_client is not None
                     await qb_client.add_magnets(stage_magnets, category=cat)
@@ -227,3 +233,109 @@ def _collect_magnets(items: list[dict[str, Any]]) -> list[str]:
             elif isinstance(v, str) and v.startswith("magnet:"):
                 magnets.append(v)
     return list(dict.fromkeys(magnets))  # dedup preserving order
+
+
+def _value_to_text(value: Any) -> str | None:
+    """Convert an extracted field value to a category string."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple, set)):
+        parts = [_value_to_text(v) for v in value]
+        joined = ",".join(part for part in parts if part)
+        return joined or None
+    return None
+
+
+_CATEGORY_FORMAT_ERRORS = (KeyError, IndexError, AttributeError, TypeError, ValueError)
+
+
+def _format_category_template(template: str, item: dict[str, Any]) -> str | None:
+    """Expand ``{field}`` placeholders in a category template.
+
+    Fields may come from either the current stage's resources or from fields
+    inherited from upstream stages.  Returns ``None`` when any placeholder is
+    missing or empty, so the caller can fall back to the global category.
+    """
+    formatter = Formatter()
+    parts: list[str] = []
+    try:
+        for literal, field_name, format_spec, conversion in formatter.parse(template):
+            parts.append(literal)
+            if field_name is None:
+                continue
+            name = field_name.strip()
+            if not name:
+                return None
+            root = name.split(".", 1)[0].split("[", 1)[0]
+            if root.startswith("_"):
+                return None
+            value, _ = formatter.get_field(name, (), item)
+            if conversion:
+                value = formatter.convert_field(value, conversion)
+            if format_spec:
+                if isinstance(value, (list, tuple, set)):
+                    value = _value_to_text(value) or ""
+                value = format(value, format_spec)
+            else:
+                value = _value_to_text(value)
+            if value is None or value == "":
+                return None
+            parts.append(str(value))
+    except _CATEGORY_FORMAT_ERRORS:
+        return None
+    return "".join(parts)
+
+
+def _resolve_category(
+    category: str,
+    item: dict[str, Any],
+    default_category: str = "",
+) -> str:
+    """Resolve the qBittorrent category for one result.
+
+    * empty category -> ``default_category`` (usually global ``qb.category``)
+    * no ``{field}`` -> literal category, unchanged
+    * ``{field}`` template -> expand from the merged current/upstream item;
+      if a field is missing/empty, fall back to ``default_category``
+    """
+    category = (category or "").strip()
+    if not category:
+        return default_category
+    if "{" not in category:
+        return category
+
+    resolved = _format_category_template(category, item)
+    return resolved or default_category
+
+
+def _collect_magnets_by_category(
+    items: list[dict[str, Any]],
+    category: str = "",
+    default_category: str = "",
+) -> dict[str, list[str]]:
+    """Collect magnets grouped by resolved category, preserving order.
+
+    Duplicate magnets are only included once across all groups.
+    """
+    grouped: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    for item in items:
+        item_magnets = _collect_magnets([item])
+        if not item_magnets:
+            continue
+        new_magnets = [magnet for magnet in item_magnets if magnet not in seen]
+        if not new_magnets:
+            continue
+        cat = _resolve_category(category, item, default_category)
+        bucket = grouped.setdefault(cat, [])
+        for magnet in new_magnets:
+            seen.add(magnet)
+            bucket.append(magnet)
+    return grouped
