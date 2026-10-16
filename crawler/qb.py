@@ -84,6 +84,39 @@ class QBClient:
             params["addToTopOfQueue"] = "true"
         return params
 
+    async def _ensure_category(self, category: str) -> bool:
+        """Create ``category`` if it does not exist yet."""
+        assert self._client is not None
+        try:
+            resp = await self._client.post(
+                "/api/v2/torrents/createCategory",
+                data={"category": category},
+            )
+        except Exception as e:
+            ename = type(e).__name__
+            print(f"  [QB] \u2716 创建分类失败: {category} ({ename}: {e})")
+            return False
+
+        if resp.status_code in (200, 409):
+            return True
+
+        body = resp.text.strip()
+        print(f"  [QB] \u2716 创建分类失败: {category} (HTTP {resp.status_code}: {body[:100]})")
+        return False
+
+    async def _set_torrent_category(self, info_hash: str, category: str) -> httpx.Response | None:
+        """Call ``setCategory`` once; return ``None`` on transport exceptions."""
+        assert self._client is not None
+        try:
+            return await self._client.post(
+                "/api/v2/torrents/setCategory",
+                data={"hashes": info_hash, "category": category},
+            )
+        except Exception as e:
+            ename = type(e).__name__
+            print(f"  [QB] \u2716 移动分类失败: {info_hash[:12]}... ({ename}: {e})")
+            return None
+
     async def _move_to_category(self, magnet: str, category: str) -> bool:
         """Move an existing torrent to ``category`` by its magnet hash."""
         info_hash = _extract_info_hash(magnet)
@@ -91,22 +124,21 @@ class QBClient:
             print(f"  [QB] \u2716 无法解析 magnet hash: {magnet[:60]}...")
             return False
 
-        assert self._client is not None
-        try:
-            resp = await self._client.post(
-                "/api/v2/torrents/setCategory",
-                data={"hashes": info_hash, "category": category},
-            )
-        except Exception as e:
-            ename = type(e).__name__
-            print(f"  [QB] \u2716 移动分类失败: {magnet[:60]}... ({ename}: {e})")
-            return False
-
-        if resp.status_code == 200:
+        resp = await self._set_torrent_category(info_hash, category)
+        if resp is not None and resp.status_code == 200:
             return True
 
-        body = resp.text.strip()
-        print(f"  [QB] \u2716 移动分类失败: {magnet[:60]}... (HTTP {resp.status_code}: {body[:100]})")
+        # setCategory requires an existing category, so create it and retry.
+        if not await self._ensure_category(category):
+            return False
+
+        retry_resp = await self._set_torrent_category(info_hash, category)
+        if retry_resp is not None and retry_resp.status_code == 200:
+            return True
+
+        if retry_resp is not None:
+            body = retry_resp.text.strip()
+            print(f"  [QB] \u2716 移动分类失败: {magnet[:60]}... (HTTP {retry_resp.status_code}: {body[:100]})")
         return False
 
     async def add_magnets(self, magnets: list[str], category: str = "") -> int:

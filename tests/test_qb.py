@@ -95,6 +95,91 @@ class TestAddMagnetsMoveExisting:
 
         assert result == 0
 
+    def test_missing_category_is_created_and_set_category_is_retried(self):
+        calls: list[httpx.Request] = []
+        set_category_calls = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal set_category_calls
+            calls.append(request)
+            if request.url.path == "/api/v2/torrents/add":
+                return httpx.Response(409, request=request)
+            if request.url.path == "/api/v2/torrents/createCategory":
+                return httpx.Response(200, request=request)
+            set_category_calls += 1
+            if set_category_calls == 1:
+                return httpx.Response(409, request=request)
+            return httpx.Response(200, request=request)
+
+        result = _run_add_magnets(
+            handler,
+            [f"magnet:?xt=urn:btih:{HEX_HASH}"],
+            category="movie/天下",
+        )
+
+        assert result == 1
+        assert [request.url.path for request in calls] == [
+            "/api/v2/torrents/add",
+            "/api/v2/torrents/setCategory",
+            "/api/v2/torrents/createCategory",
+            "/api/v2/torrents/setCategory",
+        ]
+        assert _form(calls[2])["category"] == ["movie/天下"]
+
+    def test_existing_category_conflict_still_retries_set_category(self):
+        calls: list[httpx.Request] = []
+        set_category_calls = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal set_category_calls
+            calls.append(request)
+            if request.url.path == "/api/v2/torrents/add":
+                return httpx.Response(409, request=request)
+            if request.url.path == "/api/v2/torrents/createCategory":
+                return httpx.Response(409, request=request)
+            set_category_calls += 1
+            if set_category_calls == 1:
+                return httpx.Response(409, request=request)
+            return httpx.Response(200, request=request)
+
+        result = _run_add_magnets(
+            handler,
+            [f"magnet:?xt=urn:btih:{HEX_HASH}"],
+            category="movie",
+        )
+
+        assert result == 1
+        assert [request.url.path for request in calls] == [
+            "/api/v2/torrents/add",
+            "/api/v2/torrents/setCategory",
+            "/api/v2/torrents/createCategory",
+            "/api/v2/torrents/setCategory",
+        ]
+
+    def test_category_creation_failure_is_counted_as_failed(self):
+        calls: list[httpx.Request] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            if request.url.path == "/api/v2/torrents/add":
+                return httpx.Response(409, request=request)
+            if request.url.path == "/api/v2/torrents/createCategory":
+                return httpx.Response(500, request=request)
+            return httpx.Response(409, request=request)
+
+        result = _run_add_magnets(
+            handler,
+            [f"magnet:?xt=urn:btih:{HEX_HASH}"],
+            category="movie",
+        )
+
+        assert result == 0
+        assert [request.url.path for request in calls] == [
+            "/api/v2/torrents/add",
+            "/api/v2/torrents/setCategory",
+            "/api/v2/torrents/createCategory",
+        ]
+
     def test_existing_without_category_is_not_moved(self):
         calls: list[httpx.Request] = []
 

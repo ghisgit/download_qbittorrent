@@ -199,7 +199,7 @@ category: "movie/{id}"
 
 If a placeholder is missing or resolves to an empty value, the global `qb.category` is used.  Results that resolve to different categories are grouped and added with separate qBittorrent requests.
 
-If qBittorrent reports that a torrent already exists (HTTP 409), the crawler moves it to the resolved category through `/api/v2/torrents/setCategory`.  When `category` is empty, the existing torrent is only logged and left unchanged.
+If qBittorrent reports that a torrent already exists (HTTP 409), the crawler ensures the resolved category exists (creating it with `/api/v2/torrents/createCategory` when necessary) and then moves the torrent through `/api/v2/torrents/setCategory`.  When `category` is empty, the existing torrent is only logged and left unchanged.
 
 ### Extraction rules
 
