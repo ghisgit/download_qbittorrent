@@ -20,6 +20,76 @@ class TestExpandUrls:
             "http://example.com/3",
         ]
 
+    def test_multiple_url_ranges(self):
+        from crawler.config import StageConfig
+
+        stage = StageConfig(
+            id="s",
+            url_pattern="http://example.com/{page}/{category}",
+            url_range=[
+                {"name": "page", "start": 1, "end": 3},
+                {"name": "category", "start": 1, "end": 3},
+            ],
+        )
+        assert expand_urls(stage) == [
+            "http://example.com/1/1",
+            "http://example.com/1/2",
+            "http://example.com/2/1",
+            "http://example.com/2/2",
+        ]
+
+    def test_multiple_url_ranges_with_step(self):
+        from crawler.config import StageConfig
+
+        stage = StageConfig(
+            id="s",
+            url_pattern="http://example.com/{page}/{type}",
+            url_range=[
+                {"name": "page", "start": 1, "end": 6, "step": 2},
+                {"name": "type", "start": 10, "end": 12},
+            ],
+        )
+        assert expand_urls(stage) == [
+            "http://example.com/1/10",
+            "http://example.com/1/11",
+            "http://example.com/3/10",
+            "http://example.com/3/11",
+            "http://example.com/5/10",
+            "http://example.com/5/11",
+        ]
+
+    def test_static_urls_take_precedence_over_ranges(self):
+        from crawler.config import StageConfig
+
+        stage = StageConfig(
+            id="s",
+            urls=["http://example.com/static"],
+            url_pattern="http://example.com/{page}",
+            url_range=[{"name": "page", "start": 1, "end": 3}],
+        )
+        assert expand_urls(stage) == ["http://example.com/static"]
+
+    def test_unknown_placeholder_remains_and_warns(self, capsys):
+        from crawler.config import StageConfig
+
+        stage = StageConfig(
+            id="s",
+            url_pattern="http://example.com/{page}/{unknown}",
+            url_range=[{"name": "page", "start": 1, "end": 2}],
+        )
+        assert expand_urls(stage) == ["http://example.com/1/{unknown}"]
+        assert "未配置的占位符: unknown" in capsys.readouterr().out
+
+    def test_empty_range_returns_no_urls(self):
+        from crawler.config import StageConfig
+
+        stage = StageConfig(
+            id="s",
+            url_pattern="http://example.com/{page}",
+            url_range=[{"name": "page", "start": 3, "end": 3}],
+        )
+        assert expand_urls(stage) == []
+
     def test_empty(self):
         from crawler.config import StageConfig
 

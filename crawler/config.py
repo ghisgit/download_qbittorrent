@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from itertools import product
 from pathlib import Path
 from typing import Any, Literal
 
@@ -94,7 +96,7 @@ class StageConfig:
     input: str | list[str] | None = None
     urls: list[str] = dc_field(default_factory=list)
     url_pattern: str = ""
-    url_range: dict[str, Any] | None = None
+    url_range: dict[str, Any] | list[dict[str, Any]] | None = None
     fetcher: Literal["playwright", "httpx"] = "httpx"
     headers: dict[str, str] = dc_field(default_factory=dict)
     extracts: list[ExtractConfig] = dc_field(default_factory=list)
@@ -282,16 +284,80 @@ def load_config(path: str | Path) -> CrawlerConfig:
     )
 
 
+def _url_range_values(raw_range: Any) -> tuple[str, list[str]] | None:
+    """Build the value list for one ``url_range`` entry."""
+    if not isinstance(raw_range, dict):
+        print(f"  [config] 警告: url_range 项应为字典, 收到 {type(raw_range).__name__}: {raw_range}")
+        return None
+
+    name = raw_range.get("name")
+    if not name:
+        print(f"  [config] 警告: url_range 缺少 name: {raw_range}")
+        return None
+
+    end = raw_range.get("end")
+    if end is None:
+        print(f"  [config] 警告: url_range '{name}' 缺少 end")
+        return None
+
+    start = raw_range.get("start", 0)
+    step = raw_range.get("step", 1)
+    if step == 0:
+        print("  [config] 警告: url_range.step 不能为 0, 使用默认值 1")
+        step = 1
+
+    try:
+        start_int = int(start)
+        end_int = int(end)
+        step_int = int(step)
+    except TypeError, ValueError:
+        print(f"  [config] 警告: url_range '{name}' 的 start/end/step 必须是整数")
+        return None
+
+    if step_int == 0:
+        print("  [config] 警告: url_range.step 不能为 0, 使用默认值 1")
+        step_int = 1
+
+    values = [str(value) for value in range(start_int, end_int, step_int)]
+    if not values:
+        print(f"  [config] 警告: url_range '{name}' 未生成任何值")
+    return str(name), values
+
+
 def expand_urls(stage: StageConfig) -> list[str]:
     if stage.urls:
         return stage.urls
-    if stage.url_pattern and stage.url_range:
-        name = stage.url_range["name"]
-        start = stage.url_range.get("start", 0)
-        end = stage.url_range["end"]
-        step = stage.url_range.get("step", 1)
-        if step == 0:
-            print("  [config] 警告: url_range.step 不能为 0, 使用默认值 1")
-            step = 1
-        return [stage.url_pattern.replace(f"{{{name}}}", str(i)) for i in range(start, end, step)]
-    return []
+    if not stage.url_pattern or not stage.url_range:
+        return []
+
+    raw_ranges = stage.url_range if isinstance(stage.url_range, list) else [stage.url_range]
+    ranges: list[tuple[str, list[str]]] = []
+    seen_names: set[str] = set()
+    for raw_range in raw_ranges:
+        range_item = _url_range_values(raw_range)
+        if range_item is None:
+            continue
+        name, values = range_item
+        if name in seen_names:
+            print(f"  [config] 警告: url_range.name 重复, 已忽略: {name}")
+            continue
+        seen_names.add(name)
+        ranges.append((name, values))
+
+    if not ranges or any(not values for _, values in ranges):
+        return []
+
+    configured_names = {name for name, _ in ranges}
+    placeholders = set(re.findall(r"\{([^{}]+)\}", stage.url_pattern))
+    missing = sorted(placeholders - configured_names)
+    if missing:
+        print(f"  [config] 警告: url_pattern 存在未配置的占位符: {', '.join(missing)}")
+
+    urls: list[str] = []
+    for combination in product(*(values for _, values in ranges)):
+        url = stage.url_pattern
+        for (name, _), value in zip(ranges, combination, strict=True):
+            url = url.replace(f"{{{name}}}", value)
+        urls.append(url)
+
+    return list(dict.fromkeys(urls))

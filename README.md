@@ -151,7 +151,7 @@ Each stage defines:
 | `urls`        | Static seed URL list (alternative to `url_pattern` + `url_range` for seed stages) |
 | `fetcher`     | `playwright` or `httpx`                                  |
 | `url_pattern` | URL template with `{field}` placeholders                 |
-| `url_range`   | Auto-generate URLs for seed stages                       |
+| `url_range`   | Auto-generate URLs for seed stages; single range or list of ranges |
 | `headers`     | Extra HTTP headers (httpx only)                          |
 | `extract`     | Extraction rule(s) — single object or list               |
 | `resources`   | Fields this stage produces (for logging)                 |
@@ -166,6 +166,43 @@ Each stage defines:
 | `retry`       | Retry policy (both playwright and httpx)                 |
 | `security`    | Auto-click security check buttons (playwright only)      |
 | `security_selector` | CSS selector of the security button to click        |
+
+### URL generation
+
+Seed stages can generate URLs from `url_pattern` and one or more `url_range` entries.  The original single-range form is still supported:
+
+```yaml
+url_pattern: "https://example.com/list?page={page}"
+url_range:
+  name: page
+  start: 1
+  end: 4   # end is exclusive
+  step: 1  # optional, defaults to 1
+```
+
+For multiple placeholders, use a list.  URLs are generated as the Cartesian product of all ranges, preserving configuration order:
+
+```yaml
+url_pattern: "https://example.com/list?page={page}&category={category}"
+url_range:
+  - name: page
+    start: 1
+    end: 3
+  - name: category
+    start: 1
+    end: 3
+```
+
+This generates:
+
+```text
+https://example.com/list?page=1&category=1
+https://example.com/list?page=1&category=2
+https://example.com/list?page=2&category=1
+https://example.com/list?page=2&category=2
+```
+
+`urls` takes precedence over `url_pattern` + `url_range`.  Placeholders without a matching range are left unchanged and produce a configuration warning.
 
 ### qBittorrent output
 

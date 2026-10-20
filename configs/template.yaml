@@ -67,6 +67,18 @@ stages:
       start: 1
       end: 3 # 生成 page=1,2 (end 不包含)
       step: 1
+    # 多范围写法: 每个 url_range 对应 url_pattern 中的一个 {field}
+    # 多个范围会按笛卡尔积生成 URL:
+    # url_pattern: "https://example.com/list?page={page}&category={category}"
+    # url_range:
+    #   - name: page
+    #     start: 1
+    #     end: 3
+    #     step: 1
+    #   - name: category
+    #     start: 1
+    #     end: 3
+    #     step: 1
     security: false # 是否自动点击安全验证按钮
     security_selector: ".enter-btn"
     extract:
