@@ -9,7 +9,7 @@ import crawler
 
 from .cache import HtmlCache
 from .config import CrawlerConfig, expand_urls
-from .extract import apply_filter, extract
+from .extract import apply_compare, apply_filter, extract
 from .fetch import HttpxFetcher, PlaywrightFetcher
 from .qb import QBClient
 
@@ -191,6 +191,17 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
                 before = len(results)
                 results = apply_filter(results, stage.filter)
                 print(f"[{stage.id}] 过滤: {before} -> {len(results)} 条")
+
+            if stage.compare is not None:
+                if len(results) > 1:
+                    before = len(results)
+                    results = apply_compare(results, stage.compare)
+                    detail = f"by={','.join(stage.compare.by)}, keep={stage.compare.keep}"
+                    if stage.compare.keep in ("max", "min") and stage.compare.metric:
+                        detail += f", metric={','.join(stage.compare.metric)}"
+                    print(f"[{stage.id}] 比较: {before} -> {len(results)} 条 ({detail})")
+                elif crawler.settings.verbose:
+                    print(f"[{stage.id}] 比较: 结果不足 2 条, 跳过")
 
             print(f"[{stage.id}] 提取到 {len(results)} 条数据")
             output_store[stage.id] = results

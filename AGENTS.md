@@ -48,7 +48,7 @@ The `crawler/` package provides a config-driven crawler framework. Pipeline stag
 Each YAML config defines:
 
 - global `qb` / `browser` settings
-- a sequence of `stages`, each with: fetcher (`playwright` or `httpx`), URL pattern, extraction rule (`regex`, `css`, `xpath`), retry policy, optional security-check handler, filter rules, and qBittorrent output flag.
+- a sequence of `stages`, each with: fetcher (`playwright` or `httpx`), URL pattern, extraction rule (`regex`, `css`, `xpath`), retry policy, optional security-check handler, filter rules, optional post-filter comparison rules, and qBittorrent output flag.
 - Stage output feeds into the next stage via `input`; upstream fields (non-`_` keys) are automatically merged into downstream items.
 - Any stage with `qb_send: true` sends its collected magnet links to qBittorrent.
 
@@ -61,7 +61,7 @@ uv run python -m crawler.cli -v configs/template.yaml     # detailed logging
 uv run python -m crawler.cli --debug-save configs/template.yaml  # save HTML for debugging
 ```
 
-- `-v` / `--verbose` — per-item fetch, extract, and filter decision logging
+- `-v` / `--verbose` — per-item fetch, extract, filter, and compare decision logging
 - `--debug-save` — writes downloaded HTML to `debug_*.html` files for offline inspection
 
 ## Lint, type check & test

@@ -40,8 +40,9 @@ cache:
 #   3. 用 fetcher 抓取 (playwright / httpx)
 #   4. 用 extract 从 HTML 中提取新资源
 #   5. 用 filter 过滤结果
-#   6. 结果存入 output_store[stage.id]
-#   7. 下一步通过 input 引用, 循环往复
+#   6. 可选 compare: 过滤后结果 >1 时比较去重 / 选优
+#   7. 结果存入 output_store[stage.id]
+#   8. 下一步通过 input 引用, 循环往复
 #
 # 第一步无 input, 用 urls / url_pattern+url_range 生成种子 URL
 # ══════════════════════════════════════════════════════════════
@@ -171,6 +172,16 @@ stages:
                 gte: 100
               - field: tags
                 contains: "推荐"
+    # compare: 过滤后的结果比较 (可选, 默认关闭)
+    # 仅当过滤后结果 > 1 条时执行; 按 by 字段分组, 每组只保留一条
+    # compare:
+    #   by: [title]       # 必填; 单个字段名或字段列表
+    #                     # 可用: 本 stage 提取字段 / 上游非 _ 字段 / 内部 _source_url, _source
+    #                     # 不支持 a.b 嵌套、tags[0] 下标、{field} 模板; 字段缺失的条目不参与比较
+    #   keep: max         # first(默认) / last / max / min
+    #   metric: [score]   # keep=max/min 时必填; 单字段或字段列表 (依次比较)
+    # 简写: compare: group_0  或  compare: [title, season]
+    # 缺少 by 字段的条目不参与比较, 会原样保留
 
   # ────────── 第 3 步: httpx + xpath ──────────────────────
   # 使用上一步的 post_url 字段作为 URL:
@@ -255,6 +266,17 @@ stages:
 #   input: posts                       ← 单个上游
 #   input: [ids, ids2]                 ← 多个上游拼接, 按 _url 去重
 #   dedup_by: group_0                  ← 按字段去重 (可选)
+#
+# compare: 过滤后比较提取结果 (默认关闭):
+#   仅当过滤后结果 > 1 条时执行; 按 by 字段分组, 每组保留一条
+#   compare: group_0                  ← 简写: 单字段去重, 保留第一条
+#   compare: [title, season]          ← 简写: 多字段比较
+#   compare:
+#     by: [title]                     ← 必填; 本 stage 字段 / 上游非 _ 字段 / _source_url
+#     keep: max                       ← first(默认) / last / max / min
+#     metric: [seeders, leechers]     ← keep=max/min 时必填; 依次比较, 前面的字段优先
+#   by 支持单个字段名或字段列表; 不支持 a.b 嵌套、tags[0] 下标、{field} 模板
+#   缺少 by 字段的条目不参与比较, 原样保留; 比较结果进入下游与 qBittorrent
 #
 # debug_save: 每 stage 可覆盖 CLI 全局 --debug-save:
 #   未设置      → 跟随 --debug-save

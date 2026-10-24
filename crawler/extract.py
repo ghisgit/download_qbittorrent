@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -7,7 +8,7 @@ from bs4 import BeautifulSoup
 
 import crawler
 
-from .config import _UNSET, ExtractConfig, FieldExtract, FilterCondition, FilterRule
+from .config import _UNSET, CompareConfig, CompareKeep, ExtractConfig, FieldExtract, FilterCondition, FilterRule
 
 
 def extract(html: str, cfg: ExtractConfig, source_url: str = "") -> list[dict[str, Any]]:
@@ -283,3 +284,139 @@ def apply_filter(items: list[dict[str, Any]], rules: list[FilterRule]) -> list[d
         if ok:
             filtered.append(item)
     return filtered
+
+
+# ── compare engine ───────────────────────────────────────────────────
+
+
+def _normalize_compare_value(value: Any) -> tuple[str, ...] | None:
+    """Normalize one comparison-key field to a hashable, order-preserving tuple."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        parts = [str(item).strip() for item in value if item is not None]
+        parts = [part for part in parts if part]
+        return tuple(parts) or None
+    text = str(value).strip()
+    return (text,) if text else None
+
+
+def _compare_key(item: dict[str, Any], by: list[str]) -> tuple[tuple[str, ...], ...] | None:
+    """Build the comparison key; ``None`` means the item cannot be compared."""
+    parts: list[tuple[str, ...]] = []
+    for field in by:
+        part = _normalize_compare_value(item.get(field))
+        if part is None:
+            return None
+        parts.append(part)
+    return tuple(parts)
+
+
+def _metric_value(item: dict[str, Any], field: str) -> float | None:
+    """Return a finite numeric metric value, or ``None`` when unusable."""
+    value = item.get(field)
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _metric_values(item: dict[str, Any], fields: list[str]) -> tuple[float | None, ...]:
+    return tuple(_metric_value(item, field) for field in fields)
+
+
+def _metric_better(
+    candidate: tuple[float | None, ...],
+    current: tuple[float | None, ...],
+    keep: CompareKeep,
+) -> bool:
+    """Lexicographic comparison; a missing metric only loses at its own position."""
+    for candidate_value, current_value in zip(candidate, current, strict=True):
+        if candidate_value is None and current_value is None:
+            continue
+        if candidate_value is None:
+            return False
+        if current_value is None:
+            return True
+        if candidate_value == current_value:
+            continue
+        return candidate_value > current_value if keep == "max" else candidate_value < current_value
+    return False
+
+
+def _compare_winner(
+    indices: list[int],
+    items: list[dict[str, Any]],
+    cfg: CompareConfig,
+) -> int:
+    if cfg.keep == "last":
+        return indices[-1]
+    if cfg.keep in ("max", "min") and cfg.metric:
+        winner = indices[0]
+        winner_values = _metric_values(items[winner], cfg.metric)
+        for index in indices[1:]:
+            values = _metric_values(items[index], cfg.metric)
+            if _metric_better(values, winner_values, cfg.keep):
+                winner = index
+                winner_values = values
+        return winner
+    return indices[0]
+
+
+def _display_compare_item(item: dict[str, Any]) -> str:
+    for field in ("title", "text", "group_0"):
+        value = item.get(field)
+        if value:
+            return str(value)[:60]
+    for field in ("_url", "_source_url", "_source"):
+        value = item.get(field)
+        if value:
+            return str(value)[:60]
+    return "<item>"
+
+
+def _format_compare_key(key: tuple[tuple[str, ...], ...]) -> str:
+    return " | ".join("+".join(part) for part in key)
+
+
+def apply_compare(items: list[dict[str, Any]], cfg: CompareConfig) -> list[dict[str, Any]]:
+    """Group items by ``cfg.by`` and keep one item per group.
+
+    With ``keep: max/min`` multiple metric fields are compared lexicographically.
+    The returned list preserves the original relative order of the kept items.
+    Items whose comparison key is missing/empty are always kept.
+    """
+    if len(items) < 2 or not cfg.by:
+        return items
+
+    groups: dict[tuple[tuple[str, ...], ...], list[int]] = {}
+    for index, item in enumerate(items):
+        key = _compare_key(item, cfg.by)
+        if key is None:
+            continue
+        groups.setdefault(key, []).append(index)
+
+    if not groups:
+        if crawler.settings.verbose:
+            print(f"  [compare] 无可比较项 (缺少字段: {', '.join(cfg.by)})")
+        return items
+
+    grouped: set[int] = set()
+    kept: set[int] = set()
+    for key, indices in groups.items():
+        grouped.update(indices)
+        winner = _compare_winner(indices, items, cfg)
+        kept.add(winner)
+        if crawler.settings.verbose:
+            label = _format_compare_key(key)
+            for index in indices:
+                if index != winner:
+                    print(f"  [compare] -drop: {_display_compare_item(items[index])} (key={label})")
+
+    return [item for index, item in enumerate(items) if index not in grouped or index in kept]

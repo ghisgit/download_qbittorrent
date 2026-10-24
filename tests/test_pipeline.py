@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
+import crawler
 from crawler.config import (
     CacheConfig,
+    CompareConfig,
     CrawlerConfig,
     ExtractConfig,
     FilterCondition,
@@ -277,3 +279,95 @@ class TestQBSendFilterAndCategory:
         asyncio.run(run_pipeline(cfg))
 
         assert added == [("movie/Anime", ["magnet:?xt=urn:btih:aaa"])]
+
+
+class TestComparePipeline:
+    def test_compare_runs_after_filter_and_before_qb_send(self, monkeypatch, capsys):
+        html = (
+            '<a data-name="A" data-tag="skip" data-magnet="magnet:a">'
+            '<a data-name="A" data-tag="ok" data-magnet="magnet:b">'
+            '<a data-name="A" data-tag="ok" data-magnet="magnet:c">'
+        )
+
+        async def fake_fetch(self, url: str, stage, sem) -> str:
+            return html
+
+        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+
+        added: list[tuple[str, list[str]]] = []
+
+        async def fake_add(self, magnets: list[str], category: str = "") -> int:
+            added.append((category, list(magnets)))
+            return len(magnets)
+
+        monkeypatch.setattr("crawler.pipeline.QBClient.add_magnets", fake_add)
+
+        cfg = CrawlerConfig(
+            name="t",
+            qb=QBConfig(url="http://localhost:8080", user="u", password="p"),
+            stages=[
+                StageConfig(
+                    id="magnets",
+                    urls=["http://example.com/a"],
+                    fetcher="httpx",
+                    extracts=[
+                        ExtractConfig(
+                            type="regex",
+                            pattern=r'data-name="([^"]+)" data-tag="([^"]+)" data-magnet="(magnet:[^"]+)"',
+                            multiple=True,
+                        )
+                    ],
+                    resources=["group_0", "group_1", "group_2"],
+                    filter=[FilterRule(condition=FilterCondition(field="group_1", not_in=["skip"]))],
+                    compare=CompareConfig(by=["group_0"]),
+                    qb_send=True,
+                )
+            ],
+        )
+
+        asyncio.run(run_pipeline(cfg))
+
+        assert added == [("", ["magnet:b"])]
+        out = capsys.readouterr().out
+        assert "[magnets] 过滤: 3 -> 2 条" in out
+        assert "[magnets] 比较: 2 -> 1 条 (by=group_0, keep=first)" in out
+
+    def test_compare_skipped_with_single_result(self, monkeypatch, capsys):
+        async def fake_fetch(self, url: str, stage, sem) -> str:
+            return '<a data-name="A" data-magnet="magnet:a">'
+
+        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+
+        called: list[int] = []
+
+        def fake_compare(items, cfg):
+            called.append(len(items))
+            return items
+
+        monkeypatch.setattr("crawler.pipeline.apply_compare", fake_compare)
+        monkeypatch.setattr(crawler.settings, "verbose", True)
+
+        cfg = CrawlerConfig(
+            name="t",
+            stages=[
+                StageConfig(
+                    id="magnets",
+                    urls=["http://example.com/a"],
+                    fetcher="httpx",
+                    extracts=[
+                        ExtractConfig(
+                            type="regex",
+                            pattern=r'data-name="([^"]+)" data-magnet="(magnet:[^"]+)"',
+                            multiple=True,
+                        )
+                    ],
+                    compare=CompareConfig(by=["group_0"]),
+                )
+            ],
+        )
+
+        asyncio.run(run_pipeline(cfg))
+
+        assert called == []
+        out = capsys.readouterr().out
+        assert "[magnets] 比较: 结果不足 2 条, 跳过" in out

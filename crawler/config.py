@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from dataclasses import field as dc_field
 from itertools import product
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -90,6 +90,24 @@ class FilterRule:
     all_of: list[FilterRule] = dc_field(default_factory=list)
 
 
+CompareKeep = Literal["first", "last", "max", "min"]
+
+
+@dataclass
+class CompareConfig:
+    """Post-filter comparison: group results by ``by`` and keep one per group.
+
+    ``by`` entries are literal top-level item fields: fields extracted in the
+    current stage, non-underscore fields inherited from upstream stages, or
+    internal fields such as ``_source_url`` / ``_source``.  Nested paths,
+    indexes, and ``{field}`` templates are not supported.
+    """
+
+    by: list[str] = dc_field(default_factory=list)
+    keep: CompareKeep = "first"
+    metric: list[str] = dc_field(default_factory=list)
+
+
 @dataclass
 class StageConfig:
     id: str
@@ -110,6 +128,7 @@ class StageConfig:
     concurrency: int = 0
     delay: float = 0.0
     dedup_by: str | None = None
+    compare: CompareConfig | None = None
     debug_save: bool | None = None
     cache: bool | None = None  # 覆盖全局 cache.enabled (None = 跟随全局)
 
@@ -188,6 +207,66 @@ def _parse_filter_rules(raw: list[Any]) -> list[FilterRule]:
             if cond is not None:
                 rules.append(FilterRule(condition=cond))
     return rules
+
+
+_COMPARE_KEEP_MODES: tuple[str, ...] = ("first", "last", "max", "min")
+
+
+def _parse_compare(raw: Any) -> CompareConfig | None:
+    """Parse the optional per-stage ``compare`` block.
+
+    ``by`` is required and names literal top-level item fields (nested paths and
+    templates are not supported).  Accepted forms::
+
+        compare: group_0
+        compare: [title, season]
+        compare: {by: [title], keep: max, metric: [seeders, leechers]}
+    """
+    if raw is None or raw is False:
+        return None
+    if raw is True:
+        print("  [config] 警告: compare: true 缺少 by, 已忽略; 请写 compare: <字段名> 或 compare: {by: ...}")
+        return None
+    if isinstance(raw, str):
+        raw = {"by": [raw]}
+    elif isinstance(raw, list):
+        raw = {"by": raw}
+    if not isinstance(raw, dict):
+        print(f"  [config] 警告: compare 配置应为字段名、字段列表或字典, 收到 {type(raw).__name__}: {raw}")
+        return None
+
+    by_raw = raw.get("by")
+    if isinstance(by_raw, str):
+        by = [by_raw]
+    elif isinstance(by_raw, list):
+        by = [str(item) for item in by_raw]
+    else:
+        by = []
+    by = [field.strip() for field in by if field.strip()]
+    if not by:
+        print("  [config] 警告: compare 缺少 by, 已忽略")
+        return None
+
+    keep_raw = raw.get("keep", "first")
+    keep = str(keep_raw).strip().lower()
+    if keep not in _COMPARE_KEEP_MODES:
+        print(f"  [config] 警告: compare.keep 无效 '{keep_raw}', 使用 first")
+        keep = "first"
+    keep_mode = cast(CompareKeep, keep)
+
+    metric_raw = raw.get("metric")
+    if isinstance(metric_raw, str):
+        metric = [metric_raw]
+    elif isinstance(metric_raw, list):
+        metric = [str(item) for item in metric_raw]
+    else:
+        metric = []
+    metric = [field.strip() for field in metric if field.strip()]
+    if keep_mode in ("max", "min") and not metric:
+        print(f"  [config] 警告: compare.keep={keep_mode} 需要 metric, 回退 first")
+        keep_mode = "first"
+
+    return CompareConfig(by=by, keep=keep_mode, metric=metric)
 
 
 def load_config(path: str | Path) -> CrawlerConfig:
@@ -270,6 +349,7 @@ def load_config(path: str | Path) -> CrawlerConfig:
                 concurrency=s.get("concurrency", 0),
                 delay=s.get("delay", 0.0),
                 dedup_by=s.get("dedup_by"),
+                compare=_parse_compare(s.get("compare")),
                 debug_save=s.get("debug_save"),
                 cache=s.get("cache"),
             )

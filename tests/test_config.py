@@ -255,3 +255,94 @@ class TestCacheConfig:
         )
         cfg = load_config(p)
         assert cfg.stages[0].cache is False
+
+
+class TestCompareParse:
+    def test_default_is_none(self):
+        from crawler.config import StageConfig
+
+        assert StageConfig(id="s").compare is None
+
+    def test_shorthand_field(self):
+        from crawler.config import CompareConfig, _parse_compare
+
+        assert _parse_compare("group_0") == CompareConfig(by=["group_0"])
+
+    def test_shorthand_list(self):
+        from crawler.config import CompareConfig, _parse_compare
+
+        assert _parse_compare(["title", "season"]) == CompareConfig(by=["title", "season"])
+
+    def test_mapping(self):
+        from crawler.config import CompareConfig, _parse_compare
+
+        cfg = _parse_compare(
+            {
+                "by": ["title"],
+                "keep": "max",
+                "metric": "size",
+            }
+        )
+        assert cfg == CompareConfig(by=["title"], keep="max", metric=["size"])
+
+    def test_multiple_metrics(self):
+        from crawler.config import CompareConfig, _parse_compare
+
+        cfg = _parse_compare(
+            {
+                "by": "title",
+                "keep": "max",
+                "metric": ["seeders", "leechers"],
+            }
+        )
+        assert cfg == CompareConfig(by=["title"], keep="max", metric=["seeders", "leechers"])
+
+    def test_false_and_none_are_disabled(self):
+        from crawler.config import _parse_compare
+
+        assert _parse_compare(False) is None
+        assert _parse_compare(None) is None
+
+    def test_true_is_disabled_with_warning(self, capsys):
+        from crawler.config import _parse_compare
+
+        assert _parse_compare(True) is None
+        assert "compare: true" in capsys.readouterr().out
+
+    def test_missing_by_is_disabled_with_warning(self, capsys):
+        from crawler.config import _parse_compare
+
+        assert _parse_compare({"keep": "first"}) is None
+        assert "缺少 by" in capsys.readouterr().out
+
+    def test_invalid_keep_falls_back_to_first(self, capsys):
+        from crawler.config import _parse_compare
+
+        cfg = _parse_compare({"by": "title", "keep": "best"})
+        assert cfg is not None
+        assert cfg.keep == "first"
+        assert "无效" in capsys.readouterr().out
+
+    def test_max_without_metric_falls_back_to_first(self, capsys):
+        from crawler.config import _parse_compare
+
+        cfg = _parse_compare({"by": "title", "keep": "max"})
+        assert cfg is not None
+        assert cfg.keep == "first"
+        assert "需要 metric" in capsys.readouterr().out
+
+    def test_load_config(self, tmp_path):
+        from crawler.config import CompareConfig, load_config
+
+        p = tmp_path / "compare.yaml"
+        p.write_text(
+            "name: t\nstages:\n  - id: a\n    compare:\n"
+            "      by: [title, season]\n      keep: max\n      metric: size\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(p)
+        assert cfg.stages[0].compare == CompareConfig(
+            by=["title", "season"],
+            keep="max",
+            metric=["size"],
+        )

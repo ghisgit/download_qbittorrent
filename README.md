@@ -4,7 +4,7 @@ A config-driven async crawler engine that scrapes websites, extracts magnet link
 
 ## Features
 
-- **Multi-stage pipelines** — chain fetch → extract → filter → qBittorrent across as many stages as needed
+- **Multi-stage pipelines** — chain fetch → extract → filter → compare → qBittorrent across as many stages as needed
 - **Three extraction methods** — regex, CSS selectors, XPath
 - **Two fetcher backends** — Playwright (JS-rendered pages) and httpx (lightweight)
 - **Security check bypass** — auto-click age-gate/security buttons (Playwright mode)
@@ -12,10 +12,11 @@ A config-driven async crawler engine that scrapes websites, extracts magnet link
 - **Config-driven** — all pipeline logic expressed in YAML, zero code changes to add a new crawler
 - **Per-stage control** — concurrency, delay, retry policy, category override per stage
 - **Rich filtering** — field matching (`contains`, `not_contains`, `eq`, `not_in`, numeric `gt`/`gte`/`lt`/`lte`) with `any_of` / `all_of` logical groups
+- **Post-filter comparison** — optionally group filtered results by one or more fields and keep one per group (first, last, or the max/min of one or more numeric metrics); only runs when more than one result remains
 - **Filtered qB sends** — when both `filter` and `qb_send: true` are set, only items that pass the filter are sent to qBittorrent
 - **Per-item category** — `category` supports `{field}` templates resolved from current-stage resources or fields inherited from upstream stages
 - **Upstream data merge** — downstream stages carry forward all non-`_` fields from upstream items
-- **Verbose logging** — `-v` per-item fetch, extract, and filter decision logging
+- **Verbose logging** — `-v` per-item fetch, extract, filter, and compare decision logging
 
 ## Quick start
 
@@ -156,6 +157,7 @@ Each stage defines:
 | `extract`     | Extraction rule(s) — single object or list               |
 | `resources`   | Fields this stage produces (for logging)                 |
 | `filter`      | Filter rules to drop unwanted items; `qb_send` only sends survivors |
+| `compare`     | Optional post-filter comparison (`by`, `keep`, `metric`); skipped when ≤1 result |
 | `dedup_by`    | Dedup input by this field before fetching                |
 | `cache`       | Override global `cache.enabled` for this stage (`true`/`false`) |
 | `debug_save`  | Override global `--debug-save` for this stage (`true`/`false`) |
@@ -238,6 +240,62 @@ If a placeholder is missing or resolves to an empty value, the global `qb.catego
 
 If qBittorrent reports that a torrent already exists (HTTP 409), the crawler ensures the resolved category exists (creating it with `/api/v2/torrents/createCategory` when necessary) and then moves the torrent through `/api/v2/torrents/setCategory`.  When `category` is empty, the existing torrent is only logged and left unchanged.
 
+### Comparison
+
+`compare` runs after `filter` and only when more than one result remains.  It groups results by one or more fields and keeps one item per group.  Comparison is off by default; omit `compare` (or set it to `false`) to disable it.
+
+```yaml
+- id: magnets
+  # ...
+  compare:
+    by: [title]                  # one field or a list of fields
+    keep: max                    # first (default) | last | max | min
+    metric: [seeders, leechers]  # one field or a list; required for max/min
+```
+
+`metric` can be a single field (`metric: size`) or a list.  With a list, comparison is lexicographic: the first metric has priority, and later metrics break ties:
+
+```yaml
+compare:
+  by: [title]
+  keep: max
+  metric: [seeders, leechers]   # highest seeders, then highest leechers
+```
+
+Shorthand forms:
+
+```yaml
+compare: group_0          # single field, keep first
+compare: [title, season]  # multiple fields, keep first
+```
+
+#### What `by` accepts
+
+`by` is required.  It is a literal top-level field name or a list of field names, resolved against each item at comparison time.  Common sources:
+
+| Source | Examples | Notes |
+| --- | --- | --- |
+| Fields extracted in the current stage | `title`, `magnet`, `seeders`, `group_0`, `text` | regex fields are `group_0`, `group_1`, ...; CSS/XPath fields use the configured names; simple extraction without `fields` produces `text` |
+| Fields inherited from upstream stages | `id`, `category`, `post_url` | only non-`_` fields are merged downstream |
+| Internal item fields | `_source_url`, `_source` | `_source_url` is the URL of the page the item was extracted from; useful for grouping all rows from one page |
+
+Not supported: nested paths (`a.b`), list indexes (`tags[0]`), `{field}` templates, expressions, or special keywords.  Such names are treated as literal keys and will normally be missing.  `_url` is only present on seed/pass-through items (stages without `extract`); use `_source_url` for extracted items.
+
+A list creates a composite key; every listed field must be present and non-empty, otherwise the item is unkeyed and kept as-is.  To compare all results as one group, use a key that is constant for those results, for example `by: [_source_url]` for rows extracted from the same page.
+
+Key values are normalized to trimmed strings; list/tuple values become ordered string tuples.  Comparison is exact (case-sensitive) after trimming.  There is no default key: a missing/empty `by` disables comparison with a config warning.
+
+Semantics:
+
+- `first` / `last` keep the first/last occurrence of each comparison key.
+- `max` / `min` keep the item with the largest/smallest numeric `metric`.  With multiple metrics, the fields are compared in the configured order, so `[seeders, leechers]` means “highest seeders, then highest leechers among ties”.
+- A missing or non-numeric metric only loses that field's comparison; the item can still win on an earlier metric.  If every item in the group lacks valid metrics, the first item is kept.  Ties keep the earliest item.
+- Items with a missing or empty `by` field cannot be compared and are always kept.
+- Kept items retain their original relative order.  The compared list is stored for downstream stages and is what `qb_send` uses.
+- Comparison does not query qBittorrent.
+
+Use a numeric extraction for each `metric` field (for example `type: int` or a regex-captured number), since `max`/`min` do numeric comparison only.
+
 ### Extraction rules
 
 `extract` accepts a single object or a list. Three types: `regex`, `css`, `xpath`.
@@ -305,7 +363,7 @@ Notes:
                               ...
 ```
 
-Each stage receives items from its `input` stage (or seed URLs when `input` is omitted), fetches each item's URL, extracts new fields, merges upstream fields (non-`_` keys) into extracted results, and passes them downstream.
+Each stage receives items from its `input` stage (or seed URLs when `input` is omitted), fetches each item's URL, extracts new fields, merges upstream fields (non-`_` keys) into extracted results, applies `filter` and optional `compare`, and passes the result downstream.
 
 `input` accepts a string or a list of stage IDs:
 
@@ -330,7 +388,7 @@ Use `dedup_by` to dedup incoming items by a custom field (e.g. an extracted id) 
 │   ├── __init__.py    # Global flags (VERBOSE, DEBUG_SAVE)
 │   ├── cli.py         # CLI entry point
 │   ├── config.py      # Dataclasses + YAML loader
-│   ├── extract.py     # Regex/CSS/XPath extraction + filter engine
+│   ├── extract.py     # Regex/CSS/XPath extraction + filter/compare engines
 │   ├── fetch.py       # Playwright + httpx fetchers
 │   ├── pipeline.py    # Pipeline orchestrator
 │   └── qb.py          # qBittorrent API client
@@ -347,4 +405,4 @@ Use `dedup_by` to dedup incoming items by a custom field (e.g. an extracted id) 
 
 1. Create a YAML config in `configs/`
 2. Run `uv run python -m crawler.cli configs/your-crawler.yaml`
-3. Optionally pass `-v` to debug extraction and filtering
+3. Optionally pass `-v` to debug extraction, filtering, and comparison
