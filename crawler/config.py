@@ -48,6 +48,7 @@ class FieldExtract:
     multiple: bool = False  # True ⇒ returns a list of values
     type: str = ""  # "int" to cast
     pattern: str = ""  # regex applied to the raw value (group 1 preferred)
+    replace: dict[str, str] = dc_field(default_factory=dict)  # regex → replacement, via re.sub
     flags: list[str] = dc_field(default_factory=list)  # [I, S, M]
 
 
@@ -148,12 +149,29 @@ class CrawlerConfig:
 def _parse_fields(raw: dict[str, Any] | None) -> dict[str, FieldExtract]:
     fields = {}
     for name, f_raw in (raw or {}).items():
+        replace: dict[str, str] = {}
+        replace_raw = f_raw.get("replace") or {}
+        if not isinstance(replace_raw, dict):
+            print(
+                f"  [config] 警告: 字段 '{name}' 的 replace 应为字典, 收到 {type(replace_raw).__name__}: {replace_raw}"
+            )
+        else:
+            for pattern, replacement in replace_raw.items():
+                pattern = str(pattern)
+                try:
+                    re.compile(pattern)
+                except re.error as exc:
+                    print(f"  [config] 警告: 字段 '{name}' 的 replace 正则无效: {pattern!r} ({exc}), 已忽略")
+                    continue
+                replace[pattern] = "" if replacement is None else str(replacement)
+
         fields[name] = FieldExtract(
             selector=f_raw.get("selector", ""),
             attribute=f_raw.get("attribute", ""),
             multiple=f_raw.get("multiple", False),
             type=f_raw.get("type", ""),
             pattern=f_raw.get("pattern", ""),
+            replace=replace,
             flags=f_raw.get("flags", []),
         )
     return fields

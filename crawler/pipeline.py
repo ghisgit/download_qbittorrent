@@ -8,10 +8,45 @@ from urllib.parse import urljoin
 import crawler
 
 from .cache import HtmlCache
-from .config import CrawlerConfig, expand_urls
+from .config import CrawlerConfig, StageConfig, expand_urls
 from .extract import apply_compare, apply_filter, extract
 from .fetch import HttpxFetcher, PlaywrightFetcher
 from .qb import QBClient
+
+_URL_FORMAT_ERRORS = (KeyError, IndexError, AttributeError, TypeError, ValueError)
+
+
+def _item_url(item: dict[str, Any], stage: StageConfig) -> str:
+    """Resolve the URL this stage would fetch for one item."""
+    if "_url" in item:
+        url = "" if item["_url"] is None else str(item["_url"])
+    elif stage.url_pattern:
+        try:
+            url = stage.url_pattern.format(**item)
+        except _URL_FORMAT_ERRORS:
+            return ""
+    else:
+        url = str(item.get("url") or item.get("_source") or "")
+
+    if url and not url.startswith("http"):
+        base = item.get("_source_url") or item.get("_source") or ""
+        if base:
+            try:
+                url = urljoin(str(base), url)
+            except ValueError:
+                return ""
+    return url
+
+
+def _dedup_url(item: dict[str, Any], stage: StageConfig) -> str:
+    """Return a dedup key only when this item has a real fetch target.
+
+    Extracted items normally have no ``_url``; for those, ``url_pattern`` (or an
+    explicit ``url`` field) supplies a target URL.  Falling back to ``_source``
+    here would collapse every row extracted from the same page.
+    """
+    has_target = "_url" in item or bool(stage.url_pattern) or bool(item.get("url"))
+    return _item_url(item, stage) if has_target else ""
 
 
 async def run_pipeline(config: CrawlerConfig) -> list[str]:
@@ -53,20 +88,23 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
                     print(f"[{stage.id}] 所有上游无数据, 跳过")
                     continue
                 before = len(input_items)
-                # dedup by _url across multiple sources
+                # Dedup by the URL this stage will actually fetch.  Extracted
+                # items have no _url, so the key may come from url_pattern.
                 seen_urls: set[str] = set()
                 deduped = []
-                for item in input_items:
-                    key = item.get("_url")
+                for original in input_items:
+                    item = dict(original)
+                    key = _dedup_url(item, stage)
                     if key:
                         if key in seen_urls:
                             continue
                         seen_urls.add(key)
+                        item["_url"] = key
                     deduped.append(item)
                 input_items = deduped
                 detail = "+".join(f"{k}({v})" for k, v in merged.items())
                 print(
-                    f"[{stage.id}] 合并多 input {detail} = {before} 条, 按 _url 去重: {before} -> {len(input_items)} 条"
+                    f"[{stage.id}] 合并多 input {detail} = {before} 条, 按目标 URL 去重: {before} -> {len(input_items)} 条"
                 )
             elif stage.input:
                 input_items = output_store.get(stage.input, [])
@@ -110,17 +148,7 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
 
             async def process_one(item: dict[str, Any]) -> list[dict[str, Any]]:
                 try:
-                    if "_url" in item:
-                        url = item["_url"]
-                    elif stage.url_pattern:
-                        url = stage.url_pattern.format(**item)
-                    else:
-                        url = item.get("url") or item.get("_source") or ""
-
-                    if url and not url.startswith("http"):
-                        base = item.get("_source_url") or item.get("_source") or ""
-                        if base:
-                            url = urljoin(base, url)
+                    url = _item_url(item, stage)
 
                     if not url:
                         if crawler.settings.verbose:

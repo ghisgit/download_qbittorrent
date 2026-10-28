@@ -112,7 +112,9 @@ stages:
 
   # ────────── 第 2 步: 多提取规则 + 过滤 ──────────────────
   # input 可以是单个 stage id, 也可以是列表:
-  #   input: [ids, ids2] → 拼接多个上游, 按 _url 去重后抓取
+  #   input: [ids, ids2] → 拼接多个上游, 按目标 URL 去重后抓取
+  #   目标 URL 优先取 _url, 否则用本 stage 的 url_pattern (或 url 字段) 计算
+  #   没有目标 URL 时用 dedup_by 指定去重字段; _source_url 不作为去重键
   # dedup_by: 在抓取前按字段去重输入 (如 group_0), 避免重复请求
   # ──────────────────────────────────────────────────────────
   - id: posts
@@ -146,7 +148,8 @@ stages:
             multiple: true # 返回列表 (多值时逐个应用 pattern)
           score:
             selector: ".score span"
-            type: int # 转为整数 (pattern 之后执行)
+            replace: {",": ""} # re.sub 去掉千分位, 再转 int
+            type: int # 转为整数 (pattern/replace 之后执行)
           author:
             selector: ".author-name"
       # 规则 2: 正则 — 从同页面提取隐藏数据
@@ -256,16 +259,19 @@ stages:
 #   selector: 子元素定位 (缺省取当前元素)
 #   attribute: 取值来源 — 空/"text" 取文本, 否则取属性值 (如 href)
 #   pattern:   对原始值做正则提取, 有捕获组时取组1; 无匹配则该字段缺失
-#   flags:     [I, S, M] 正则标志
-#   type:      "int" 转换 (在 pattern 之后执行)
+#   replace:   {正则: 替换文本} 对 pattern 后的值逐项 re.sub (按配置顺序, flags 同样生效)
+#   flags:     [I, S, M] 正则标志 (同时用于 pattern 和 replace)
+#   type:      "int" 转换 (在 pattern/replace 之后执行)
 #   multiple:  true 时返回列表, 并对每个子元素逐个应用上述管线
 #
 # 顶层 multiple: 默认 true 返回全部匹配; 设为 false 仅保留第一个匹配
 #
 # input 支持单条或列表:
 #   input: posts                       ← 单个上游
-#   input: [ids, ids2]                 ← 多个上游拼接, 按 _url 去重
-#   dedup_by: group_0                  ← 按字段去重 (可选)
+#   input: [ids, ids2]                 ← 多个上游拼接, 按目标 URL 去重
+#   dedup_by: group_0                  ← 按字段去重 (可选; 没有目标 URL 时用它)
+# 目标 URL = _url, 或本 stage 的 url_pattern/url 字段计算出的 URL;
+# _source_url 是所有同页条目共享的页面地址, 不作为去重键
 #
 # compare: 过滤后比较提取结果 (默认关闭):
 #   仅当过滤后结果 > 1 条时执行; 按 by 字段分组, 每组保留一条

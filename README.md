@@ -8,7 +8,7 @@ A config-driven async crawler engine that scrapes websites, extracts magnet link
 - **Three extraction methods** — regex, CSS selectors, XPath
 - **Two fetcher backends** — Playwright (JS-rendered pages) and httpx (lightweight)
 - **Security check bypass** — auto-click age-gate/security buttons (Playwright mode)
-- **Multi-input merge** — a stage can consume several upstream stages (`input: [a, b]`), concatenating items and deduplicating by `_url`; `dedup_by` also dedups by any field
+- **Multi-input merge** — a stage can consume several upstream stages (`input: [a, b]`), concatenating items and deduplicating by the URL each item will fetch (`_url`, `url_pattern`, or an explicit `url` field); `dedup_by` also dedups by any field
 - **Config-driven** — all pipeline logic expressed in YAML, zero code changes to add a new crawler
 - **Per-stage control** — concurrency, delay, retry policy, category override per stage
 - **Rich filtering** — field matching (`contains`, `not_contains`, `eq`, `not_in`, numeric `gt`/`gte`/`lt`/`lte`) with `any_of` / `all_of` logical groups
@@ -176,7 +176,7 @@ Each stage defines:
 | Field         | Description                                              |
 | ------------- | -------------------------------------------------------- |
 | `id`          | Unique stage identifier                                  |
-| `input`       | Upstream stage ID(s) — string or list; list concatenates sources and dedups by `_url` |
+| `input`       | Upstream stage ID(s) — string or list; list concatenates sources and dedups by target URL |
 | `urls`        | Static seed URL list (alternative to `url_pattern` + `url_range` for seed stages) |
 | `fetcher`     | `playwright` or `httpx`                                  |
 | `url_pattern` | URL template with `{field}` placeholders                 |
@@ -186,7 +186,7 @@ Each stage defines:
 | `resources`   | Fields this stage produces (for logging)                 |
 | `filter`      | Filter rules to drop unwanted items; `qb_send` only sends survivors |
 | `compare`     | Optional post-filter comparison (`by`, `keep`, `metric`); skipped when ≤1 result |
-| `dedup_by`    | Dedup input by this field before fetching                |
+| `dedup_by`    | Dedup input by this field before fetching (use when no target URL is available) |
 | `cache`       | Override global `cache.enabled` for this stage (`true`/`false`) |
 | `debug_save`  | Override global `--debug-save` for this stage (`true`/`false`) |
 | `qb_send`     | Send magnets from filtered results to qBittorrent        |
@@ -344,7 +344,11 @@ extract:
         attribute: href
         pattern: "post-(\\d+)"     # regex on the raw value; group 1 preferred
         flags: [I]
-        type: int                  # cast after pattern
+        type: int                  # cast after pattern/replace
+      seeders:
+        selector: "td:nth-child(6)"
+        replace: {",": ""}         # re.sub: remove thousands separators
+        type: int
       tags:
         selector: "span.tag"
         multiple: true             # returns a list (pipeline applied per element)
@@ -353,7 +357,9 @@ extract:
     multiple: true                 # false keeps only the first match
 ```
 
-Field-level options (`css`/`xpath` multi-field mode): `selector`, `attribute`, `pattern`, `flags`, `type` (`"int"`), `multiple`. Value pipeline: **attribute/text → regex (`pattern`) → cast (`type`)**; a field is omitted when its pattern misses.
+Field-level options (`css`/`xpath` multi-field mode): `selector`, `attribute`, `pattern`, `replace`, `flags`, `type` (`"int"`), `multiple`. Value pipeline: **attribute/text → regex (`pattern`) → `re.sub` (`replace`) → cast (`type`)**; flags apply to both `pattern` and `replace`. A field is omitted when its pattern misses; invalid replace regexes are ignored with a config warning.
+
+`replace` is a mapping of regex pattern to replacement string, applied in configuration order to every occurrence (`re.sub`). For example, `replace: {",": ""}` turns `"1,234"` into `"1234"` before `type: int`.
 
 ### Caching
 
@@ -397,10 +403,10 @@ Each stage receives items from its `input` stage (or seed URLs when `input` is o
 
 ```yaml
 input: posts          # single upstream stage
-input: [posts, posts2] # merge two sources (dedup by _url)
+input: [posts, posts2] # merge two sources (dedup by target URL)
 ```
 
-Use `dedup_by` to dedup incoming items by a custom field (e.g. an extracted id) before fetching:
+For a multi-input stage, each item's dedup key is the URL this stage will fetch: `_url` when present, otherwise the URL built from `url_pattern` (or an explicit `url` field).  Relative URLs are resolved against `_source_url` first.  `_source_url` itself is never used as the key because every row extracted from the same page shares it.  If the stage has no `_url`, `url_pattern`, or `url` field, use `dedup_by` to select a field, for example:
 
 ```yaml
 - id: details

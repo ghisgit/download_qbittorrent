@@ -184,7 +184,28 @@ class TestParseFields:
         fields = _parse_fields({"t": {}})
         fe = fields["t"]
         assert fe.pattern == ""
+        assert fe.replace == {}
         assert fe.flags == []
+
+    def test_replace(self):
+        from crawler.config import _parse_fields
+
+        fields = _parse_fields({"seeders": {"replace": {",": "", r"\s+": ""}}})
+        assert fields["seeders"].replace == {",": "", r"\s+": ""}
+
+    def test_invalid_replace_type_warns(self, capsys):
+        from crawler.config import _parse_fields
+
+        fields = _parse_fields({"seeders": {"replace": "bad"}})
+        assert fields["seeders"].replace == {}
+        assert "replace 应为字典" in capsys.readouterr().out
+
+    def test_invalid_replace_regex_is_skipped(self, capsys):
+        from crawler.config import _parse_fields
+
+        fields = _parse_fields({"seeders": {"replace": {",": "", "[": ""}}})
+        assert fields["seeders"].replace == {",": ""}
+        assert "replace 正则无效" in capsys.readouterr().out
 
 
 class TestDebugSave:

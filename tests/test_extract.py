@@ -149,6 +149,96 @@ class TestCssFieldPattern:
         assert items[0]["ids"] == ["1", "2"]
 
 
+class TestFieldReplace:
+    def test_replace_before_int_cast(self):
+        from crawler.config import FieldExtract
+
+        html = '<div class="item"><span class="seeders">1,234</span></div>'
+        cfg = ExtractConfig(
+            type="css",
+            selector="div.item",
+            fields={
+                "seeders": FieldExtract(
+                    selector=".seeders",
+                    replace={",": ""},
+                    type="int",
+                )
+            },
+        )
+        items = extract(html, cfg)
+        assert items[0]["seeders"] == 1234
+
+    def test_replace_after_pattern(self):
+        from crawler.config import FieldExtract
+
+        html = '<div class="item"><span class="size">size=1,234 MB</span></div>'
+        cfg = ExtractConfig(
+            type="css",
+            selector="div.item",
+            fields={
+                "size": FieldExtract(
+                    selector=".size",
+                    pattern=r"size=([\d,]+)",
+                    replace={",": ""},
+                    type="int",
+                )
+            },
+        )
+        items = extract(html, cfg)
+        assert items[0]["size"] == 1234
+
+    def test_multiple_replacements_apply_in_order(self):
+        from crawler.config import FieldExtract
+
+        html = '<div class="item"><span class="value">x 1, 2</span></div>'
+        cfg = ExtractConfig(
+            type="css",
+            selector="div.item",
+            fields={
+                "value": FieldExtract(
+                    selector=".value",
+                    replace={r"\s+": "", r"^x": ""},
+                )
+            },
+        )
+        items = extract(html, cfg)
+        assert items[0]["value"] == "1,2"
+
+    def test_replace_uses_flags(self):
+        from crawler.config import FieldExtract
+
+        html = '<div class="item"><span class="value">FOO</span></div>'
+        cfg = ExtractConfig(
+            type="css",
+            selector="div.item",
+            fields={
+                "value": FieldExtract(
+                    selector=".value",
+                    replace={r"foo": "bar"},
+                    flags=["I"],
+                )
+            },
+        )
+        items = extract(html, cfg)
+        assert items[0]["value"] == "bar"
+
+    def test_invalid_replacement_omits_field(self):
+        from crawler.config import FieldExtract
+
+        html = '<div class="item"><span class="value">abc</span></div>'
+        cfg = ExtractConfig(
+            type="css",
+            selector="div.item",
+            fields={
+                "title": FieldExtract(selector=".value"),
+                "value": FieldExtract(selector=".value", replace={"(": ""}),
+            },
+        )
+        items = extract(html, cfg)
+        assert items[0]["title"] == "abc"
+        assert "value" not in items[0]
+
+
 class TestXPathFieldPattern:
     HTML = """
     <div class="item"><h3><a href="article_search.php?id=42">Hello</a></h3></div>

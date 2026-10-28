@@ -62,12 +62,16 @@ def _single_value(el: Any, attr: str) -> str | None:
 
 
 def _finalize_value(raw: str | None, fe: FieldExtract) -> Any:
-    """Value pipeline: regex pattern → int cast.  Returns None if extraction fails."""
+    """Value pipeline: pattern → re.sub replacements → int cast.
+
+    Returns ``None`` when extraction or replace fails.
+    """
     if raw is None:
         return None
     val: str = raw
+    flags = _compile_flags(fe.flags)
     if fe.pattern:
-        m = re.search(fe.pattern, val, _compile_flags(fe.flags))
+        m = re.search(fe.pattern, val, flags)
         if not m:
             return None
         val = m.group(0)
@@ -77,6 +81,12 @@ def _finalize_value(raw: str | None, fe: FieldExtract) -> Any:
                 if g is not None:
                     val = g
                     break
+    if fe.replace:
+        try:
+            for pattern, replacement in fe.replace.items():
+                val = re.sub(pattern, replacement, val, flags=flags)
+        except re.error:
+            return None
     if fe.type == "int":
         try:
             return int(val)

@@ -91,7 +91,176 @@ class TestMultiInputDedupLog:
         )
         asyncio.run(run_pipeline(cfg))
         out = capsys.readouterr().out
-        assert "[c] 合并多 input a(1)+b(1) = 2 条, 按 _url 去重: 2 -> 1 条" in out
+        assert "[c] 合并多 input a(1)+b(1) = 2 条, 按目标 URL 去重: 2 -> 1 条" in out
+
+
+class TestMultiInputTargetUrlDedup:
+    def test_extracted_items_dedup_by_computed_url(self, monkeypatch, capsys):
+        html_by_url = {
+            "http://example.com/a": '<a data-id="1"></a><a data-id="2"></a>',
+            "http://example.com/b": '<a data-id="1"></a><a data-id="2"></a>',
+        }
+        calls: list[str] = []
+
+        async def fake_fetch(self, url: str, stage, sem) -> str:
+            calls.append(url)
+            return html_by_url.get(url, "<html></html>")
+
+        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+
+        cfg = CrawlerConfig(
+            name="t",
+            stages=[
+                StageConfig(
+                    id="a",
+                    urls=["http://example.com/a"],
+                    fetcher="httpx",
+                    extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
+                ),
+                StageConfig(
+                    id="b",
+                    urls=["http://example.com/b"],
+                    fetcher="httpx",
+                    extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
+                ),
+                StageConfig(
+                    id="c",
+                    input=["a", "b"],
+                    fetcher="httpx",
+                    url_pattern="http://example.com/detail/{group_0}",
+                ),
+            ],
+        )
+
+        asyncio.run(run_pipeline(cfg))
+
+        out = capsys.readouterr().out
+        assert "[c] 合并多 input a(2)+b(2) = 4 条, 按目标 URL 去重: 4 -> 2 条" in out
+        assert calls.count("http://example.com/detail/1") == 1
+        assert calls.count("http://example.com/detail/2") == 1
+
+    def test_relative_pattern_resolves_before_dedup(self, monkeypatch, capsys):
+        html_by_url = {
+            "http://example.com/a": '<a href="/detail/1">x</a>',
+            "http://example.com/b": '<a href="/detail/1">x</a>',
+        }
+        calls: list[str] = []
+
+        async def fake_fetch(self, url: str, stage, sem) -> str:
+            calls.append(url)
+            return html_by_url.get(url, "<html></html>")
+
+        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+
+        cfg = CrawlerConfig(
+            name="t",
+            stages=[
+                StageConfig(
+                    id="a",
+                    urls=["http://example.com/a"],
+                    fetcher="httpx",
+                    extracts=[ExtractConfig(type="css", selector="a", attribute="href", multiple=True)],
+                ),
+                StageConfig(
+                    id="b",
+                    urls=["http://example.com/b"],
+                    fetcher="httpx",
+                    extracts=[ExtractConfig(type="css", selector="a", attribute="href", multiple=True)],
+                ),
+                StageConfig(
+                    id="c",
+                    input=["a", "b"],
+                    fetcher="httpx",
+                    url_pattern="{text}",
+                ),
+            ],
+        )
+
+        asyncio.run(run_pipeline(cfg))
+
+        out = capsys.readouterr().out
+        assert "[c] 合并多 input a(1)+b(1) = 2 条, 按目标 URL 去重: 2 -> 1 条" in out
+        assert calls.count("http://example.com/detail/1") == 1
+
+    def test_no_target_url_does_not_collapse_source_rows(self, monkeypatch, capsys):
+        html = '<a data-id="1"></a><a data-id="2"></a>'
+
+        async def fake_fetch(self, url: str, stage, sem) -> str:
+            return html
+
+        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+
+        cfg = CrawlerConfig(
+            name="t",
+            stages=[
+                StageConfig(
+                    id="a",
+                    urls=["http://example.com/a"],
+                    fetcher="httpx",
+                    extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
+                ),
+                StageConfig(
+                    id="b",
+                    urls=["http://example.com/b"],
+                    fetcher="httpx",
+                    extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
+                ),
+                StageConfig(id="c", input=["a", "b"], fetcher="httpx"),
+            ],
+        )
+
+        asyncio.run(run_pipeline(cfg))
+
+        out = capsys.readouterr().out
+        assert "[c] 合并多 input a(2)+b(2) = 4 条, 按目标 URL 去重: 4 -> 4 条" in out
+
+    def test_does_not_mutate_upstream_items(self, monkeypatch):
+        html_by_url = {
+            "http://example.com/a": '<a data-id="1"></a>',
+            "http://example.com/b": '<a data-id="1"></a>',
+        }
+        calls: list[str] = []
+
+        async def fake_fetch(self, url: str, stage, sem) -> str:
+            calls.append(url)
+            return html_by_url.get(url, "<html></html>")
+
+        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+
+        cfg = CrawlerConfig(
+            name="t",
+            stages=[
+                StageConfig(
+                    id="a",
+                    urls=["http://example.com/a"],
+                    fetcher="httpx",
+                    extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
+                ),
+                StageConfig(
+                    id="b",
+                    urls=["http://example.com/b"],
+                    fetcher="httpx",
+                    extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
+                ),
+                StageConfig(
+                    id="c",
+                    input=["a", "b"],
+                    fetcher="httpx",
+                    url_pattern="http://example.com/c/{group_0}",
+                ),
+                StageConfig(
+                    id="d",
+                    input="a",
+                    fetcher="httpx",
+                    url_pattern="http://example.com/d/{group_0}",
+                ),
+            ],
+        )
+
+        asyncio.run(run_pipeline(cfg))
+
+        assert calls.count("http://example.com/c/1") == 1
+        assert calls.count("http://example.com/d/1") == 1
 
 
 class TestCollectMagnets:
