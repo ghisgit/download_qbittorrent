@@ -17,6 +17,7 @@ A config-driven async crawler engine that scrapes websites, extracts magnet link
 - **Per-item category** — `category` supports `{field}` templates resolved from current-stage resources or fields inherited from upstream stages
 - **Upstream data merge** — downstream stages carry forward all non-`_` fields from upstream items
 - **Verbose logging** — `-v` per-item fetch, extract, filter, and compare decision logging
+- **Timestamped run logs** — optionally tee stdout/stderr to `logs/crawler_YYYYMMDD_HHMMSS.log` via `--log-save` or environment variables, with an optional custom directory
 
 ## Quick start
 
@@ -49,6 +50,7 @@ docker compose run --rm crawler                # runs /app/user.yaml by default
 docker compose run --rm crawler -v             # add -v for verbose logging
 docker compose run --rm crawler /app/user.yaml # specify a config explicitly
 CRAWLER_VERBOSE=1 docker compose run --rm crawler  # or via environment variable
+docker compose run --rm -e CRAWLER_LOG_SAVE=1 crawler  # save logs under ./work/logs/
 ```
 
 Enter your options through the root `.env` (env vars above), or `required: false` means compose still works without it. Compose sets `network_mode: host`, so `qb.url`'s `http://localhost:8080` reaches the host's qBittorrent directly — no YAML changes needed (Linux only).
@@ -58,7 +60,7 @@ Enter your options through the root `.env` (env vars above), or `required: false
 | Host path      | Container path  | Description                                          |
 | -------------- | --------------- | ---------------------------------------------------- |
 | `./user.yaml`  | `/app/user.yaml`| Read-only personal config (contains qB credentials)  |
-| `./work/`      | `/app/work`     | Working directory; `--debug-save` HTML lands in `./work/` on the host |
+| `./work/`      | `/app/work`     | Working directory; `--debug-save` HTML and run logs (`./work/logs/`) land on the host |
 
 For daily runs only the personal `user.yaml` needs mounting; the `configs/` template is for syntax reference and is not required.
 
@@ -84,22 +86,26 @@ docker run --rm --network host --user $(id -u):$(id -g) \
 ## CLI
 
 ```
-uv run python -m crawler.cli [-v] [--debug-save] <config.yaml>
+uv run python -m crawler.cli [-v] [--debug-save] [--log-save] [--log-dir DIR] <config.yaml>
 ```
 
 | Flag               | Description                                                   |
 | ------------------ | ------------------------------------------------------------- |
 | `-v` / `--verbose` | Per-item fetch, extract, and filter decision logging          |
 | `--debug-save`     | Save downloaded HTML to `debug_{stage.id}_*.html` for offline inspection |
+| `--log-save`       | Save run output to a timestamped log file                     |
+| `--log-dir DIR`    | Log directory (default `logs`; setting it also enables log saving) |
 
-Both options can also be controlled via environment variables (CLI flag wins):
+These options can also be controlled via environment variables (CLI flags win):
 
 ```bash
 CRAWLER_VERBOSE=1 uv run python -m crawler.cli configs/template.yaml
 CRAWLER_DEBUG_SAVE=1 uv run python -m crawler.cli configs/template.yaml
+CRAWLER_LOG_SAVE=1 uv run python -m crawler.cli configs/template.yaml
+CRAWLER_LOG_DIR=/tmp/crawler-logs uv run python -m crawler.cli configs/template.yaml
 ```
 
-Acceptable values: `1`, `true`, `yes`, `on`.
+Acceptable values for boolean variables (`CRAWLER_VERBOSE`, `CRAWLER_DEBUG_SAVE`, `CRAWLER_LOG_SAVE`): `1`, `true`, `yes`, `on`.
 
 `--debug-save` is a global switch, but each stage can override it with `debug_save`:
 
@@ -116,6 +122,28 @@ Acceptable values: `1`, `true`, `yes`, `on`.
 ```
 
 Unset stages follow the global CLI flag. Retry (`retry: {max_retries, retryable_codes}`) works for both fetchers — it retries on load failures/timeouts and on the listed HTTP status codes, with exponential backoff.
+
+### Run logs
+
+Enable with `--log-save` (or `CRAWLER_LOG_SAVE=1`). Each run creates a new file named from the local start time:
+
+```text
+logs/crawler_20261028_192527.log
+```
+
+- Default directory is `logs`; use `--log-dir DIR` or `CRAWLER_LOG_DIR=DIR` to change it. Setting either directory option also enables logging.
+- stdout and stderr are still printed to the console and are tee'd into the file; config warnings and unhandled tracebacks are included.
+- Existing log files are never overwritten; runs starting in the same second get `_1`, `_2`, ... suffixes.
+- If the directory/file cannot be created or written, the crawler logs a warning and continues without file logging.
+- In Docker the working directory is `/app/work`, so default logs land in `./work/logs/` on the host.
+- Timestamps use the process local time; Docker defaults to UTC unless `TZ` is set (for example `TZ=Asia/Shanghai`).
+- CLI options take precedence over environment variables.
+
+```bash
+uv run python -m crawler.cli --log-save configs/template.yaml
+uv run python -m crawler.cli --log-dir /tmp/crawler-logs configs/template.yaml
+CRAWLER_LOG_SAVE=1 uv run python -m crawler.cli configs/template.yaml
+```
 
 ## Configuration
 
@@ -390,6 +418,7 @@ Use `dedup_by` to dedup incoming items by a custom field (e.g. an extracted id) 
 │   ├── config.py      # Dataclasses + YAML loader
 │   ├── extract.py     # Regex/CSS/XPath extraction + filter/compare engines
 │   ├── fetch.py       # Playwright + httpx fetchers
+│   ├── log.py         # Timestamped run log capture
 │   ├── pipeline.py    # Pipeline orchestrator
 │   └── qb.py          # qBittorrent API client
 ├── configs/

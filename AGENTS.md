@@ -59,10 +59,13 @@ To add a new crawler: create a YAML file under `configs/` and run it with the CL
 ```bash
 uv run python -m crawler.cli -v configs/template.yaml     # detailed logging
 uv run python -m crawler.cli --debug-save configs/template.yaml  # save HTML for debugging
+uv run python -m crawler.cli --log-save configs/template.yaml    # save a timestamped run log
 ```
 
 - `-v` / `--verbose` — per-item fetch, extract, filter, and compare decision logging
 - `--debug-save` — writes downloaded HTML to `debug_*.html` files for offline inspection
+- `--log-save` / `CRAWLER_LOG_SAVE` — tee stdout/stderr to `logs/crawler_YYYYMMDD_HHMMSS.log`
+- `--log-dir` / `CRAWLER_LOG_DIR` — log directory (default `logs`; setting it also enables logging); under Docker logs land in `./work/logs/`
 
 ## Lint, type check & test
 

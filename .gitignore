@@ -24,6 +24,9 @@ wheels/
 # Debug HTML dumps
 debug_*.html
 
+# Run logs
+logs/
+
 # Docker workdir (debug output mount target)
 work/*
 !work/.gitkeep
