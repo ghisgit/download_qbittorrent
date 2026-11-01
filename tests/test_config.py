@@ -105,6 +105,41 @@ class TestFilterParse:
         assert cond is not None
         assert cond.field == "text"
         assert cond.contains == "foo"
+        assert cond.flags == []
+
+    def test_condition_flags(self):
+        from crawler.config import _parse_condition
+
+        cond = _parse_condition({"field": "title", "contains": "foo", "flags": ["I"]})
+        assert cond is not None
+        assert cond.flags == ["I"]
+
+    def test_field_list_is_rejected(self, capsys):
+        from crawler.config import _parse_condition
+
+        assert _parse_condition({"field": ["title", "tags"], "contains": "foo"}) is None
+        assert "只支持单个字段名" in capsys.readouterr().out
+
+    def test_invalid_regex_is_rejected(self, capsys):
+        from crawler.config import _parse_condition
+
+        assert _parse_condition({"field": "title", "contains": "["}) is None
+        assert "正则无效" in capsys.readouterr().out
+
+    def test_placeholder_pattern_is_valid(self):
+        from crawler.config import _parse_condition
+
+        cond = _parse_condition({"field": "title", "not_contains": "广告|{{author}}"})
+        assert cond is not None
+        assert cond.not_contains == "广告|{{author}}"
+
+    def test_not_in_migration_warning(self, capsys):
+        from crawler.config import _parse_condition
+
+        cond = _parse_condition({"field": "tags", "contains": "a", "not_in": ["x"]})
+        assert cond is not None
+        assert cond.contains == "a"
+        assert "not_in 已移除" in capsys.readouterr().out
 
     def test_condition_no_operators(self):
         from crawler.config import _parse_condition

@@ -11,7 +11,7 @@ A config-driven async crawler engine that scrapes websites, extracts magnet link
 - **Multi-input merge** — a stage can consume several upstream stages (`input: [a, b]`), concatenating items and deduplicating by the URL each item will fetch (`_url`, `url_pattern`, or an explicit `url` field); `dedup_by` also dedups by any field
 - **Config-driven** — all pipeline logic expressed in YAML, zero code changes to add a new crawler
 - **Per-stage control** — concurrency, delay, retry policy, category override per stage
-- **Rich filtering** — field matching (`contains`, `not_contains`, `eq`, `not_in`, numeric `gt`/`gte`/`lt`/`lte`) with `any_of` / `all_of` logical groups
+- **Regex filtering** — `contains` / `not_contains` use Python `re` with optional `flags` and `{{field}}` placeholders (current or upstream fields), plus `eq`, numeric comparisons, and `any_of` / `all_of` groups
 - **Post-filter comparison** — optionally group filtered results by one or more fields and keep one per group (first, last, or the max/min of one or more numeric metrics); only runs when more than one result remains
 - **Filtered qB sends** — when both `filter` and `qb_send: true` are set, only items that pass the filter are sent to qBittorrent
 - **Per-item category** — `category` supports `{field}` templates resolved from current-stage resources or fields inherited from upstream stages
@@ -360,6 +360,36 @@ extract:
 Field-level options (`css`/`xpath` multi-field mode): `selector`, `attribute`, `pattern`, `replace`, `flags`, `type` (`"int"`), `multiple`. Value pipeline: **attribute/text → regex (`pattern`) → `re.sub` (`replace`) → cast (`type`)**; flags apply to both `pattern` and `replace`. A field is omitted when its pattern misses; invalid replace regexes are ignored with a config warning.
 
 `replace` is a mapping of regex pattern to replacement string, applied in configuration order to every occurrence (`re.sub`). For example, `replace: {",": ""}` turns `"1,234"` into `"1234"` before `type: int`.
+
+### Filtering
+
+`filter` keeps only items for which every rule passes.  `contains` and `not_contains` are Python regular expressions (`re.search`):
+
+```yaml
+filter:
+  - field: title
+    not_contains: "广告|推广"
+    flags: [I]
+  - field: tags
+    contains: "精华"
+  - field: title
+    not_contains: "{{author}}"   # value of author, matched literally
+  - field: score
+    gte: 100
+  - any_of:
+      - field: tags
+        contains: "推荐"
+      - field: score
+        gte: 100
+```
+
+- `field` is a single field name from the current extraction or from upstream merged fields; it defaults to `text`.
+- `contains` / `not_contains` use `re.search`; optional `flags` accepts `[I]`, `[S]`, `[M]` (inline flags also work).
+- `{{field}}` placeholders are resolved from the item (current or upstream field), escaped with `re.escape`, and inserted literally.  List values expand to `(?:a|b)`; missing/empty values become `(?!)`.
+- Single braces remain regex syntax (`\d{2,4}`); only double braces are placeholders.
+- `eq` remains exact equality; numeric `gt` / `gte` / `lt` / `lte` are unchanged.
+- `not_in` was removed: use `not_contains` with alternation, for example `not_contains: "低质量|垃圾"`.
+- Invalid regexes are rejected with a config warning.
 
 ### Caching
 

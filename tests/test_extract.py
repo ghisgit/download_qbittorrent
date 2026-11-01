@@ -291,20 +291,112 @@ class TestFilterEngine:
         assert _check_condition({"val": "10"}, FilterCondition(field="val", gt=_UNSET))
         # gt not set — should always pass
 
-    def test_not_in(self):
+    def test_contains_regex(self):
         from crawler.config import FilterCondition
         from crawler.extract import _check_condition
 
-        assert not _check_condition({"text": "hello"}, FilterCondition(not_in=["hello"]))
-        assert _check_condition({"text": "hello"}, FilterCondition(not_in=["world"]))
+        assert _check_condition({"text": "abc123"}, FilterCondition(contains=r"\d{3}"))
+        assert not _check_condition({"text": "abc12"}, FilterCondition(contains=r"\d{3}"))
 
-    def test_not_in_multivalue_field(self):
+    def test_not_contains_regex(self):
         from crawler.config import FilterCondition
         from crawler.extract import _check_condition
 
-        cond = FilterCondition(field="tags", not_in=["低质量"])
-        assert not _check_condition({"tags": ["精华", "低质量"]}, cond)
-        assert _check_condition({"tags": ["精华", "推荐"]}, cond)
+        assert not _check_condition({"text": "广告推广"}, FilterCondition(not_contains="广告|推广"))
+        assert _check_condition({"text": "正常内容"}, FilterCondition(not_contains="广告|推广"))
+
+    def test_regex_flags(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        assert _check_condition({"text": "HELLO"}, FilterCondition(contains="hello", flags=["I"]))
+        assert not _check_condition({"text": "HELLO"}, FilterCondition(contains="hello"))
+
+    def test_placeholder_scalar(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        item = {"title": "Hello Alice", "author": "Alice"}
+        assert not _check_condition(item, FilterCondition(field="title", not_contains="{{author}}"))
+        assert _check_condition(
+            {"title": "Hello Bob", "author": "Alice"},
+            FilterCondition(field="title", not_contains="{{author}}"),
+        )
+
+    def test_placeholder_upstream_field(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        item = {"title": "post by Alice", "author": "Alice"}
+        assert _check_condition(item, FilterCondition(field="title", contains="{{author}}"))
+
+    def test_placeholder_escapes_regex(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        item = {"title": "Version A.B", "version": "A.B"}
+        assert _check_condition(item, FilterCondition(field="title", contains="{{version}}"))
+        assert _check_condition(
+            {"title": "Version AxB", "version": "A.B"},
+            FilterCondition(field="title", not_contains="{{version}}"),
+        )
+
+    def test_placeholder_list(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        item = {"title": "sci-fi movie", "tags": ["action", "sci-fi"]}
+        assert _check_condition(item, FilterCondition(field="title", contains="{{tags}}"))
+
+    def test_placeholder_number(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        assert _check_condition(
+            {"title": "post-42", "id": 42},
+            FilterCondition(field="title", contains="{{id}}"),
+        )
+        assert not _check_condition(
+            {"title": "post-99", "id": 42},
+            FilterCondition(field="title", contains="{{id}}"),
+        )
+
+    def test_placeholder_missing_is_no_match(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        assert not _check_condition(
+            {"title": "abc"},
+            FilterCondition(field="title", contains="{{missing}}"),
+        )
+        assert _check_condition(
+            {"title": "abc"},
+            FilterCondition(field="title", not_contains="{{missing}}"),
+        )
+
+    def test_placeholder_does_not_eat_quantifier(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        assert _check_condition({"text": "1234"}, FilterCondition(contains=r"\d{2,4}"))
+        assert not _check_condition({"text": "1"}, FilterCondition(contains=r"\d{2,4}"))
+
+    def test_placeholder_flags(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        item = {"title": "Hello ALICE", "author": "Alice"}
+        assert not _check_condition(
+            item,
+            FilterCondition(field="title", not_contains="{{author}}", flags=["I"]),
+        )
+
+    def test_eq_is_exact(self):
+        from crawler.config import FilterCondition
+        from crawler.extract import _check_condition
+
+        assert _check_condition({"title": "a.b"}, FilterCondition(field="title", eq="a.b"))
+        assert not _check_condition({"title": "axb"}, FilterCondition(field="title", eq="a.b"))
 
     def test_rule_any_of(self):
         from crawler.config import FilterCondition, FilterRule

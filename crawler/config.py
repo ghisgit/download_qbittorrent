@@ -72,10 +72,10 @@ class FilterCondition:
     """A primitive condition: check one field."""
 
     field: str = "text"
-    contains: str = ""
-    not_contains: str = ""
+    contains: str = ""  # regex, re.search
+    not_contains: str = ""  # regex, inverted re.search
     eq: str = ""
-    not_in: list[str] = dc_field(default_factory=list)
+    flags: list[str] = dc_field(default_factory=list)  # [I, S, M] for regex fields
     gt: float = _UNSET
     gte: float = _UNSET
     lt: float = _UNSET
@@ -182,15 +182,58 @@ def _parse_condition(raw: Any) -> FilterCondition | None:
         print(f"  [config] 警告: filter 条件应为字典, 收到 {type(raw).__name__}: {raw}")
         return None
 
+    field = raw.get("field", "text")
+    if not isinstance(field, str):
+        print(f"  [config] 警告: filter.field 只支持单个字段名, 收到 {type(field).__name__}: {field}")
+        return None
+
+    if "not_in" in raw:
+        print('  [config] 警告: filter.not_in 已移除, 请改用 not_contains 正则 (例如 "低质量|垃圾")')
+
+    def _get_text(key: str) -> str | None:
+        value = raw.get(key, "")
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            print(f"  [config] 警告: filter.{key} 应为字符串, 收到 {type(value).__name__}: {value}")
+            return None
+        return value
+
+    contains = _get_text("contains")
+    not_contains = _get_text("not_contains")
+    eq = _get_text("eq")
+    if contains is None or not_contains is None or eq is None:
+        return None
+
+    flags_raw = raw.get("flags", [])
+    if isinstance(flags_raw, str):
+        flags = [flags_raw]
+    elif isinstance(flags_raw, list):
+        flags = [str(flag) for flag in flags_raw]
+    elif flags_raw is None:
+        flags = []
+    else:
+        print(f"  [config] 警告: filter.flags 应为列表, 收到 {type(flags_raw).__name__}: {flags_raw}")
+        flags = []
+
+    for pattern_name, pattern in (("contains", contains), ("not_contains", not_contains)):
+        if not pattern:
+            continue
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            print(f"  [config] 警告: filter.{pattern_name} 正则无效: {pattern!r} ({exc}), 条件已忽略")
+            return None
+
     def _get(v: Any) -> float:
         return _UNSET if v is None else v
 
     cond = FilterCondition(
-        field=raw.get("field", "text"),
-        contains=raw.get("contains", ""),
-        not_contains=raw.get("not_contains", ""),
-        eq=raw.get("eq", ""),
-        not_in=raw.get("not_in", []),
+        field=field,
+        contains=contains,
+        not_contains=not_contains,
+        eq=eq,
+        flags=flags,
         gt=_get(raw.get("gt")),
         gte=_get(raw.get("gte")),
         lt=_get(raw.get("lt")),
@@ -201,7 +244,6 @@ def _parse_condition(raw: Any) -> FilterCondition | None:
             cond.contains,
             cond.not_contains,
             cond.eq,
-            cond.not_in,
             cond.gt is not _UNSET,
             cond.gte is not _UNSET,
             cond.lt is not _UNSET,

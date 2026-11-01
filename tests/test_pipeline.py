@@ -379,7 +379,7 @@ class TestQBSendFilterAndCategory:
                         )
                     ],
                     resources=["group_0", "group_1"],
-                    filter=[FilterRule(condition=FilterCondition(field="group_0", not_in=["skip"]))],
+                    filter=[FilterRule(condition=FilterCondition(field="group_0", not_contains=r"^skip$"))],
                     category="movie/{group_0}",
                     qb_send=True,
                 )
@@ -450,6 +450,78 @@ class TestQBSendFilterAndCategory:
         assert added == [("movie/Anime", ["magnet:?xt=urn:btih:aaa"])]
 
 
+class TestFilterPlaceholderPipeline:
+    def test_placeholder_uses_upstream_field(self, monkeypatch):
+        list_html = (
+            '<a data-name="Alice" data-author="Alice" data-id="1"></a>'
+            '<a data-name="Bob" data-author="Alice" data-id="2"></a>'
+            '<a data-name="Carol" data-author="Bob" data-id="3"></a>'
+        )
+
+        async def fake_fetch(self, url: str, stage, sem) -> str:
+            if url == "http://example.com/list":
+                return list_html
+            ident = url.rsplit("/", 1)[-1]
+            return f'<a class="magnet" href="magnet:{ident}"></a>'
+
+        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+
+        added: list[tuple[str, list[str]]] = []
+
+        async def fake_add(self, magnets: list[str], category: str = "") -> int:
+            added.append((category, list(magnets)))
+            return len(magnets)
+
+        monkeypatch.setattr("crawler.pipeline.QBClient.add_magnets", fake_add)
+
+        cfg = CrawlerConfig(
+            name="t",
+            qb=QBConfig(url="http://localhost:8080", user="u", password="p"),
+            stages=[
+                StageConfig(
+                    id="list",
+                    urls=["http://example.com/list"],
+                    fetcher="httpx",
+                    extracts=[
+                        ExtractConfig(
+                            type="regex",
+                            pattern=r'data-name="([^"]+)" data-author="([^"]+)" data-id="(\d+)"',
+                            multiple=True,
+                        )
+                    ],
+                    resources=["group_0", "group_1", "group_2"],
+                ),
+                StageConfig(
+                    id="magnets",
+                    input="list",
+                    fetcher="httpx",
+                    url_pattern="http://example.com/detail/{group_2}",
+                    extracts=[
+                        ExtractConfig(
+                            type="css",
+                            selector="a.magnet",
+                            attribute="href",
+                            multiple=True,
+                        )
+                    ],
+                    filter=[
+                        FilterRule(
+                            condition=FilterCondition(
+                                field="group_0",
+                                not_contains="{{group_1}}",
+                            )
+                        )
+                    ],
+                    qb_send=True,
+                ),
+            ],
+        )
+
+        asyncio.run(run_pipeline(cfg))
+
+        assert added == [("", ["magnet:2", "magnet:3"])]
+
+
 class TestComparePipeline:
     def test_compare_runs_after_filter_and_before_qb_send(self, monkeypatch, capsys):
         html = (
@@ -487,7 +559,7 @@ class TestComparePipeline:
                         )
                     ],
                     resources=["group_0", "group_1", "group_2"],
-                    filter=[FilterRule(condition=FilterCondition(field="group_1", not_in=["skip"]))],
+                    filter=[FilterRule(condition=FilterCondition(field="group_1", not_contains=r"^skip$"))],
                     compare=CompareConfig(by=["group_0"]),
                     qb_send=True,
                 )

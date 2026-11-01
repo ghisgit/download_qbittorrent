@@ -160,16 +160,22 @@ stages:
         multiple: true
     resources:
       ["post_url", "id", "title", "tags", "score", "author", "group_0", "group_1"]
+    # filter: field 只支持单个字段名 (本 stage 字段或上游合并字段)
+    # contains / not_contains 使用 re.search 正则; flags 支持 [I,S,M]
+    # 双花括号 {{字段}} 为占位符 (值会 re.escape), 单花括号仍为正则量词
     filter:
       - field: title
-        not_contains: "广告"
+        not_contains: "广告|推广"
       - field: tags
-        not_in: ["低质量", "垃圾"] # 字段值不在列表中
+        not_contains: "低质量|垃圾" # 原 not_in 的替代写法
       - field: title
         eq: "今日推荐" # 字段值完全等于
+      - field: title
+        not_contains: "{{author}}" # 引用当前/上游 author 字段
       - any_of:
           - field: tags
             contains: "精华"
+            flags: [I]
           - all_of:
               - field: score
                 gte: 100
@@ -272,6 +278,12 @@ stages:
 #   dedup_by: group_0                  ← 按字段去重 (可选; 没有目标 URL 时用它)
 # 目标 URL = _url, 或本 stage 的 url_pattern/url 字段计算出的 URL;
 # _source_url 是所有同页条目共享的页面地址, 不作为去重键
+#
+# filter: field 只支持单个字段名 (本 stage 字段或上游合并字段):
+#   contains / not_contains 使用 re.search 正则; flags: [I, S, M] 可选
+#   {{字段名}} 为占位符, 可引用当前/上游字段, 值会 re.escape 后按字面匹配
+#   单花括号仍为正则量词 (如 \d{2,4}); not_in 已移除, 改用 not_contains: "低质量|垃圾"
+#   eq 仍为精确相等; gt/gte/lt/lte 数值比较不变
 #
 # compare: 过滤后比较提取结果 (默认关闭):
 #   仅当过滤后结果 > 1 条时执行; 按 by 字段分组, 每组保留一条

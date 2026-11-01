@@ -228,22 +228,58 @@ def _get_field(item: dict[str, Any], field: str) -> str:
     return str(val)
 
 
+_FILTER_PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+
+
+def _filter_literal(value: Any) -> str:
+    """Turn a field value into a regex-safe literal fragment."""
+    if value is None:
+        return "(?!)"
+    if isinstance(value, (list, tuple, set)):
+        parts = [re.escape(str(item)) for item in value if item is not None and str(item) != ""]
+        return "(?:" + "|".join(parts) + ")" if parts else "(?!)"
+    text = str(value)
+    return re.escape(text) if text != "" else "(?!)"
+
+
+def _expand_filter_pattern(pattern: str, item: dict[str, Any]) -> str:
+    """Replace ``{{field}}`` placeholders with regex-escaped item values."""
+
+    def replace(match: re.Match[str]) -> str:
+        field = match.group(1).strip()
+        if field not in item:
+            if crawler.settings.verbose:
+                print(f"  [filter] 警告: 占位符字段不存在: {field}")
+            return "(?!)"
+        return _filter_literal(item[field])
+
+    return _FILTER_PLACEHOLDER_RE.sub(replace, pattern)
+
+
 def _check_condition(item: dict[str, Any], cond: FilterCondition) -> bool:
     val = _get_field(item, cond.field)
+    flags = _compile_flags(cond.flags)
 
-    if cond.contains and cond.contains not in val:
-        return False
-    if cond.not_contains and cond.not_contains in val:
-        return False
+    if cond.contains:
+        pattern = _expand_filter_pattern(cond.contains, item)
+        try:
+            if re.search(pattern, val, flags) is None:
+                return False
+        except re.error as exc:
+            if crawler.settings.verbose:
+                print(f"  [filter] 警告: contains 正则错误 {pattern!r}: {exc}")
+            return False
+    if cond.not_contains:
+        pattern = _expand_filter_pattern(cond.not_contains, item)
+        try:
+            if re.search(pattern, val, flags) is not None:
+                return False
+        except re.error as exc:
+            if crawler.settings.verbose:
+                print(f"  [filter] 警告: not_contains 正则错误 {pattern!r}: {exc}")
+            return False
     if cond.eq and val != cond.eq:
         return False
-    if cond.not_in:
-        raw_val = item.get(cond.field)
-        if isinstance(raw_val, list):
-            if any(str(v) in cond.not_in for v in raw_val):
-                return False
-        elif val in cond.not_in:
-            return False
     if cond.gt is not _UNSET:
         try:
             if float(val) <= cond.gt:
