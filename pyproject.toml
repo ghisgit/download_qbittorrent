@@ -9,9 +9,8 @@ dependencies = [
     "beautifulsoup4>=4.13.0",
     "httpx>=0.28.1",
     "lxml>=6.1.1",
-    "playwright>=1.52.0",
-    "playwright-stealth>=2.0.3",
     "pyyaml>=6.0",
+    "scrapling[fetchers]>=0.5.1",
 ]
 
 [dependency-groups]

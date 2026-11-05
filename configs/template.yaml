@@ -17,10 +17,12 @@ qb:
   first_last_piece_prio: true
   add_to_top_of_queue: true
 
-# ── Playwright 浏览器 ────────────────────────────────────────
+# ── StealthySession 浏览器 ───────────────────────────────────
+# args 会作为 extra_flags 传给 Scrapling 的浏览器启动参数
 browser:
   headless: false # 生产环境建议 true
   args: ["--blink-settings=imagesEnabled=false"]
+  solve_cloudflare: false # 默认关闭; 需要时可在 stage 中单独开启
 
 # ── HTML 响应缓存 ───────────────────────────────────────────
 # 按 URL 缓存抓到的 HTML, 重跑时命中缓存直接跳过 fetch
@@ -37,7 +39,7 @@ cache:
 # 核心概念:
 #   1. 每步从 input 获取上游资源列表
 #   2. 对每个资源, 根据 url_pattern 或 字段 构建 URL
-#   3. 用 fetcher 抓取 (playwright / httpx)
+#   3. 用 fetcher 抓取 (stealthy / http)
 #   4. 用 extract 从 HTML 中提取新资源
 #   5. 用 filter 过滤结果
 #   6. 可选 compare: 过滤后结果 >1 时比较去重 / 选优
@@ -53,10 +55,10 @@ stages:
   #   urls: ["https://example.com/list?page=1", ".../page=2"]
   # ──────────────────────────────────────────────────────────
   - id: ids
-    fetcher: playwright # 使用 Playwright (可渲染 JS)
+    fetcher: stealthy # 使用 Scrapling StealthySession (可渲染 JS)
     concurrency: 3 # 并发上限
     delay: 1.0 # 每次抓取后延时
-    # retry: playwright/httpx 均支持 (默认 1 次不重试)
+    # retry: stealthy/http 均支持 (默认 1 次不重试)
     retry:
       max_retries: 3
       retryable_codes: [429, 502, 503, 504]
@@ -80,8 +82,6 @@ stages:
     #     start: 1
     #     end: 3
     #     step: 1
-    security: false # 是否自动点击安全验证按钮
-    security_selector: ".enter-btn"
     extract:
       type: regex
       pattern: '<a href="/detail/(\d+)">(.*?)</a>'
@@ -94,7 +94,7 @@ stages:
   # 与 ids 相同, 但抓取不同的页, 作为 posts 的第二个上游
   # ──────────────────────────────────────────────────────────
   - id: ids2
-    fetcher: playwright
+    fetcher: stealthy
     concurrency: 3
     delay: 1.0
     url_pattern: "https://example.com/list?page={page}"
@@ -120,12 +120,14 @@ stages:
   - id: posts
     input: [ids, ids2]
     dedup_by: group_0 # 两个源可能抓到相同 id, 先去重再抓详情页
-    fetcher: playwright
+    fetcher: stealthy
     concurrency: 3
     delay: 1.0
     url_pattern: "https://example.com/detail/{group_0}"
-    security: true
+    # 设置 security_selector 即启用安全验证点击; 留空表示不启用
     security_selector: ".enter-btn"
+    # Cloudflare 验证较慢, 默认关闭; 只有确实需要时再开启
+    solve_cloudflare: true
     extract:
       # 规则 1: CSS 多字段 — 提取帖子元信息
       - type: css
@@ -192,16 +194,16 @@ stages:
     # 简写: compare: group_0  或  compare: [title, season]
     # 缺少 by 字段的条目不参与比较, 会原样保留
 
-  # ────────── 第 3 步: httpx + xpath ──────────────────────
+  # ────────── 第 3 步: http + xpath ──────────────────────
   # 使用上一步的 post_url 字段作为 URL:
   # url_pattern 里的 {post_url} 会被替换成每条的 post_url 值
   # (若 post_url 是相对路径, 会自动基于来源 URL 转成绝对地址)
   # ──────────────────────────────────────────────────────────
   - id: details
     input: posts
-    fetcher: httpx
+    fetcher: http
     url_pattern: "{post_url}" # 用 post_url 字段构建待抓取 URL
-    concurrency: 10 # httpx 默认并发 10
+    concurrency: 10 # http 默认并发 10
     delay: 2.0
     headers:
       User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -222,7 +224,7 @@ stages:
   # ──────────────────────────────────────────────────────────
   - id: magnets
     input: details
-    fetcher: httpx
+    fetcher: http
     url_pattern: "https://example.com/links/{text}"
     extract:
       type: regex
@@ -301,7 +303,11 @@ stages:
 #   debug_save: true   → 即使不加 --debug-save 也保存 (保存到 debug_{stage.id}_*.html)
 #   debug_save: false  → 即使加了 --debug-save 也不保存
 #
-# retry: playwright 与 httpx 均支持 (默认不重试):
+# solve_cloudflare: 仅 stealthy 生效; 默认跟随 browser.solve_cloudflare (默认 false):
+#   全局: browser.solve_cloudflare: true
+#   单 stage: solve_cloudflare: true / false (覆盖全局)
+#
+# retry: stealthy 与 http 均支持 (默认不重试):
 #   retry:
 #     max_retries: 3
 #     retryable_codes: [429, 502, 503, 504]   # 命中状态码或加载异常时退避重试

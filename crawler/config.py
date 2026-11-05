@@ -26,6 +26,7 @@ class QBConfig:
 class BrowserConfig:
     headless: bool = True
     args: list[str] = dc_field(default_factory=lambda: ["--blink-settings=imagesEnabled=false"])
+    solve_cloudflare: bool = False
 
 
 @dataclass
@@ -116,13 +117,13 @@ class StageConfig:
     urls: list[str] = dc_field(default_factory=list)
     url_pattern: str = ""
     url_range: dict[str, Any] | list[dict[str, Any]] | None = None
-    fetcher: Literal["playwright", "httpx"] = "httpx"
+    fetcher: Literal["stealthy", "http"] = "http"
     headers: dict[str, str] = dc_field(default_factory=dict)
     extracts: list[ExtractConfig] = dc_field(default_factory=list)
     retry: RetryConfig | None = None
     filter: list[FilterRule] = dc_field(default_factory=list)
-    security: bool = False
     security_selector: str = ""
+    solve_cloudflare: bool | None = None  # 覆盖 browser.solve_cloudflare (None = 跟随全局)
     resources: list[str] = dc_field(default_factory=list)
     qb_send: bool = False
     category: str = ""
@@ -329,6 +330,22 @@ def _parse_compare(raw: Any) -> CompareConfig | None:
     return CompareConfig(by=by, keep=keep_mode, metric=metric)
 
 
+_FETCHER_ALIASES: dict[str, str] = {"playwright": "stealthy", "httpx": "http"}
+_FETCHER_VALUES: tuple[str, ...] = ("stealthy", "http")
+
+
+def _parse_fetcher(raw: Any, stage_id: str) -> Literal["stealthy", "http"]:
+    value = str(raw or "http").strip().lower()
+    if value in _FETCHER_ALIASES:
+        mapped = _FETCHER_ALIASES[value]
+        print(f"  [config] 警告: stage '{stage_id}' 的 fetcher '{value}' 已弃用, 自动映射为 '{mapped}'")
+        value = mapped
+    if value not in _FETCHER_VALUES:
+        print(f"  [config] 警告: stage '{stage_id}' 的 fetcher '{value}' 无效, 使用默认 'http'")
+        return "http"
+    return cast(Literal["stealthy", "http"], value)
+
+
 def load_config(path: str | Path) -> CrawlerConfig:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
 
@@ -350,6 +367,7 @@ def load_config(path: str | Path) -> CrawlerConfig:
     browser = BrowserConfig(
         headless=browser_raw.get("headless", True),
         args=browser_raw.get("args", ["--blink-settings=imagesEnabled=false"]),
+        solve_cloudflare=browser_raw.get("solve_cloudflare", False),
     )
 
     cache_raw = raw.get("cache", {})
@@ -389,20 +407,30 @@ def load_config(path: str | Path) -> CrawlerConfig:
                     retryable_codes=set(retry_raw.get("retryable_codes", [429, 502, 503, 504])),
                 )
 
+        stage_id = str(s["id"])
+        fetcher = _parse_fetcher(s.get("fetcher", "http"), stage_id)
+        security_selector = str(s.get("security_selector") or "")
+        if "security" in s:
+            print(f"  [config] 警告: stage '{stage_id}' 的 security 选项已移除, 仅由 security_selector 决定是否启用")
+        if security_selector and fetcher != "stealthy":
+            print(f"  [config] 警告: stage '{stage_id}' 设置了 security_selector, 但 fetcher 不是 stealthy, 已忽略")
+        if s.get("solve_cloudflare") and fetcher != "stealthy":
+            print(f"  [config] 警告: stage '{stage_id}' 设置了 solve_cloudflare, 但 fetcher 不是 stealthy, 已忽略")
+
         stages.append(
             StageConfig(
-                id=s["id"],
+                id=stage_id,
                 input=s.get("input"),
                 urls=s.get("urls", []),
                 url_pattern=s.get("url_pattern", ""),
                 url_range=s.get("url_range"),
-                fetcher=s.get("fetcher", "httpx"),
+                fetcher=fetcher,
                 headers=s.get("headers", {}),
                 extracts=extracts,
                 retry=retry,
                 filter=_parse_filter_rules(s.get("filter")),
-                security=s.get("security", False),
-                security_selector=s.get("security_selector", ""),
+                security_selector=security_selector,
+                solve_cloudflare=s.get("solve_cloudflare"),
                 resources=s.get("resources", []),
                 qb_send=s.get("qb_send", False),
                 category=s.get("category", ""),

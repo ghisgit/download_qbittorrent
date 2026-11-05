@@ -6,8 +6,8 @@ A config-driven async crawler engine that scrapes websites, extracts magnet link
 
 - **Multi-stage pipelines** — chain fetch → extract → filter → compare → qBittorrent across as many stages as needed
 - **Three extraction methods** — regex, CSS selectors, XPath
-- **Two fetcher backends** — Playwright (JS-rendered pages) and httpx (lightweight)
-- **Security check bypass** — auto-click age-gate/security buttons (Playwright mode)
+- **Two fetcher backends** — Scrapling `StealthySession` (JS-rendered pages, opt-in Cloudflare solving) and `Fetcher` (lightweight HTTP)
+- **Security check bypass** — set `security_selector` to auto-click age-gate/security buttons through a Scrapling `page_action`
 - **Multi-input merge** — a stage can consume several upstream stages (`input: [a, b]`), concatenating items and deduplicating by the URL each item will fetch (`_url`, `url_pattern`, or an explicit `url` field); `dedup_by` also dedups by any field
 - **Config-driven** — all pipeline logic expressed in YAML, zero code changes to add a new crawler
 - **Per-stage control** — concurrency, delay, retry policy, category override per stage
@@ -25,8 +25,8 @@ A config-driven async crawler engine that scrapes websites, extracts magnet link
 # Install dependencies
 uv sync
 
-# Install Chromium for Playwright
-playwright install chromium
+# Install Chromium for Scrapling StealthySession
+uv run scrapling install
 
 # Run a crawler
 uv run python -m crawler.cli configs/template.yaml
@@ -111,17 +111,17 @@ Acceptable values for boolean variables (`CRAWLER_VERBOSE`, `CRAWLER_DEBUG_SAVE`
 
 ```yaml
 - id: posts
-  fetcher: playwright
+  fetcher: stealthy
   debug_save: true  # save HTML even without --debug-save
   ...
 
 - id: details
-  fetcher: httpx
+  fetcher: http
   debug_save: false # don't save even with --debug-save
   ...
 ```
 
-Unset stages follow the global CLI flag. Retry (`retry: {max_retries, retryable_codes}`) works for both fetchers — it retries on load failures/timeouts and on the listed HTTP status codes, with exponential backoff.
+Unset stages follow the global CLI flag. Retry (`retry: {max_retries, retryable_codes}`) works for both fetchers (`stealthy` and `http`) — it retries on load failures/timeouts and on the listed HTTP status codes, with exponential backoff.
 
 ### Run logs
 
@@ -164,9 +164,10 @@ qb: # qBittorrent connection
   first_last_piece_prio: true
   add_to_top_of_queue: true
 
-browser: # Playwright browser config
+browser: # StealthySession browser config
   headless: true
-  args: ["--blink-settings=imagesEnabled=false"]
+  args: ["--blink-settings=imagesEnabled=false"] # passed to Scrapling as extra_flags
+  solve_cloudflare: false # global default; can be overridden per stage
 ```
 
 ### Pipeline stages
@@ -178,10 +179,10 @@ Each stage defines:
 | `id`          | Unique stage identifier                                  |
 | `input`       | Upstream stage ID(s) — string or list; list concatenates sources and dedups by target URL |
 | `urls`        | Static seed URL list (alternative to `url_pattern` + `url_range` for seed stages) |
-| `fetcher`     | `playwright` or `httpx`                                  |
+| `fetcher`     | `stealthy` (`AsyncStealthySession`) or `http` (`FetcherSession`); default `http` |
 | `url_pattern` | URL template with `{field}` placeholders                 |
 | `url_range`   | Auto-generate URLs for seed stages; single range or list of ranges |
-| `headers`     | Extra HTTP headers (httpx only)                          |
+| `headers`     | Extra HTTP headers (`http` uses `headers`; `stealthy` maps them to `extra_headers`) |
 | `extract`     | Extraction rule(s) — single object or list               |
 | `resources`   | Fields this stage produces (for logging)                 |
 | `filter`      | Filter rules to drop unwanted items; `qb_send` only sends survivors |
@@ -191,11 +192,25 @@ Each stage defines:
 | `debug_save`  | Override global `--debug-save` for this stage (`true`/`false`) |
 | `qb_send`     | Send magnets from filtered results to qBittorrent        |
 | `category`    | Override the global `qb.category`; supports `{field}` templates |
-| `concurrency` | Max concurrent fetches (default: playwright=3, httpx=10) |
+| `concurrency` | Max concurrent fetches (default: stealthy=3, http=10)    |
 | `delay`       | Seconds to wait after each fetch                         |
-| `retry`       | Retry policy (both playwright and httpx)                 |
-| `security`    | Auto-click security check buttons (playwright only)      |
-| `security_selector` | CSS selector of the security button to click        |
+| `retry`       | Retry policy (both stealthy and http)                    |
+| `security_selector` | CSS selector of the security button; setting it enables the click (`stealthy` only) |
+| `solve_cloudflare` | Enable the Cloudflare solver for this stage (`stealthy` only); unset follows `browser.solve_cloudflare` (default `false`) |
+
+Legacy `playwright` / `httpx` fetcher values are still accepted and are mapped to `stealthy` / `http` with a deprecation warning.
+
+Cloudflare solving is disabled by default because it can take minutes. Enable it globally with `browser.solve_cloudflare: true`, or only for the stages that need it:
+
+```yaml
+- id: posts
+  fetcher: stealthy
+  solve_cloudflare: true
+```
+
+The solver's internal operation waits are capped at 30 seconds (navigation timeout remains 120 seconds), which keeps a failed or slow challenge from blocking for several minutes.
+
+When `security_selector` is set on a `stealthy` stage, the fetcher runs a `page_action` after navigation: it waits for `networkidle`, looks for the selector, clicks it when it is visible, then waits for `networkidle` again. If the selector is absent or hidden, the page is treated as already verified.
 
 ### URL generation
 
@@ -241,7 +256,7 @@ https://example.com/list?page=2&category=2
 ```yaml
 - id: magnets
   input: details
-  fetcher: httpx
+  fetcher: http
   url_pattern: "https://example.com/links/{text}"
   extract:
     type: regex
@@ -406,13 +421,13 @@ Each stage can override the global setting (unset = follow global):
 
 ```yaml
 - id: details
-  fetcher: httpx
+  fetcher: http
   cache: false     # always fetch, don't cache
 ```
 
 Notes:
 
-- Cache hits skip the fetcher entirely — no network request, no retry, no security-click, no `--debug-save` dump
+- Cache hits skip the fetcher entirely — no network request, no retry, no security action, no `--debug-save` dump
 - `qb_send` still runs on cached data; duplicate magnets are ignored by qBittorrent (dedup by hash)
 - When the site markup changes, delete the cache directory to avoid stale extractions
 - With Docker, `workdir` is `/app/work` so the cache lands in the mounted `./work/cache` on the host
@@ -453,7 +468,7 @@ For a multi-input stage, each item's dedup key is the URL this stage will fetch:
 │   ├── cli.py         # CLI entry point
 │   ├── config.py      # Dataclasses + YAML loader
 │   ├── extract.py     # Regex/CSS/XPath extraction + filter/compare engines
-│   ├── fetch.py       # Playwright + httpx fetchers
+│   ├── fetch.py       # Scrapling StealthySession + HTTP Fetcher
 │   ├── log.py         # Timestamped run log capture
 │   ├── pipeline.py    # Pipeline orchestrator
 │   └── qb.py          # qBittorrent API client

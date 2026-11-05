@@ -28,7 +28,7 @@ def minimal_config() -> CrawlerConfig:
                 {
                     "id": "seed",
                     "urls": ["https://example.com"],
-                    "fetcher": "httpx",
+                    "fetcher": "http",
                 }
             ],
         },

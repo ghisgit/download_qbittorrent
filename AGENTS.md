@@ -3,7 +3,7 @@
 ## Stack
 
 - Python 3.14+, managed with **uv** (lockfile: `uv.lock`)
-- Dependencies: `httpx`, `bs4` (beautifulsoup4), `lxml`, `playwright`, `playwright-stealth`, `pyyaml`
+- Dependencies: `scrapling[fetchers]`, `bs4` (beautifulsoup4), `lxml`, `pyyaml`, `httpx` (qBittorrent client only)
 - Async throughout (asyncio)
 - Linting: `ruff` (check + format)
 - Type checking: `pyright`
@@ -12,7 +12,7 @@
 
 ```bash
 uv sync                            # install dependencies
-playwright install chromium        # required for Playwright fetcher
+uv run scrapling install           # install Chromium for StealthySession
 ```
 
 ## Docker
@@ -48,7 +48,7 @@ The `crawler/` package provides a config-driven crawler framework. Pipeline stag
 Each YAML config defines:
 
 - global `qb` / `browser` settings
-- a sequence of `stages`, each with: fetcher (`playwright` or `httpx`), URL pattern, extraction rule (`regex`, `css`, `xpath`), retry policy, optional security-check handler, filter rules, optional post-filter comparison rules, and qBittorrent output flag.
+- a sequence of `stages`, each with: fetcher (`stealthy` or `http`), URL pattern, extraction rule (`regex`, `css`, `xpath`), retry policy, optional `security_selector` (clicked via a Scrapling `page_action`), optional `solve_cloudflare` override, filter rules, optional post-filter comparison rules, and qBittorrent output flag.
 - Stage output feeds into the next stage via `input`; upstream fields (non-`_` keys) are automatically merged into downstream items.
 - Any stage with `qb_send: true` sends its collected magnet links to qBittorrent.
 
@@ -83,5 +83,9 @@ All commands must pass before committing.
 - qBittorrent credentials/host are configured in YAML (`qb.url`, `qb.user`, `qb.password`). Edit the config file before running.
 - The template config `configs/template.yaml` is for reference only — create your own config for actual crawling.
 - Personal/user-specific configs should be placed in `user.yaml` (gitignored) at the project root.
-- Playwright fetcher uses `headless: true` by default in production configs; set `browser.headless: false` for debugging.
+- `stealthy` uses Scrapling `AsyncStealthySession`; `http` uses Scrapling `FetcherSession`. `browser.args` is passed to Scrapling as `extra_flags`.
+- `solve_cloudflare` defaults to `false`. Enable globally with `browser.solve_cloudflare: true` or per stage with `solve_cloudflare: true`. Solver operation waits are capped at 30s while navigation timeout stays at 120s.
+- `security_selector` alone enables the security-gate click; there is no separate `security` flag. It only applies to `stealthy`.
+- `httpx` is still used by `crawler/qb.py` for the qBittorrent API; crawl fetching no longer uses it.
+- `stealthy` uses `headless: true` by default in production configs; set `browser.headless: false` for debugging.
 - `.venv/`, `__pycache__/`, and `user.yaml` are gitignored.

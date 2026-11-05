@@ -402,3 +402,72 @@ class TestCompareParse:
             keep="max",
             metric=["size"],
         )
+
+
+class TestFetcherCompatibility:
+    def test_default_is_http(self):
+        from crawler.config import StageConfig
+
+        assert StageConfig(id="s").fetcher == "http"
+
+    def test_legacy_names_are_mapped(self, tmp_path, capsys):
+        from crawler.config import load_config
+
+        p = tmp_path / "legacy_fetchers.yaml"
+        p.write_text(
+            "name: t\nstages:\n  - id: a\n    fetcher: playwright\n  - id: b\n    fetcher: httpx\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(p)
+        assert [stage.fetcher for stage in cfg.stages] == ["stealthy", "http"]
+        out = capsys.readouterr().out
+        assert "已弃用" in out
+        assert "自动映射" in out
+
+    def test_security_key_warns_and_selector_still_enables(self, tmp_path, capsys):
+        from crawler.config import load_config
+
+        p = tmp_path / "legacy_security.yaml"
+        p.write_text(
+            "name: t\nstages:\n"
+            "  - id: a\n    fetcher: stealthy\n    security: false\n"
+            '    security_selector: ".enter-btn"\n',
+            encoding="utf-8",
+        )
+        cfg = load_config(p)
+        stage = cfg.stages[0]
+        assert not hasattr(stage, "security")
+        assert stage.security_selector == ".enter-btn"
+        assert "security 选项已移除" in capsys.readouterr().out
+
+    def test_selector_on_http_warns(self, tmp_path, capsys):
+        from crawler.config import load_config
+
+        p = tmp_path / "http_selector.yaml"
+        p.write_text(
+            'name: t\nstages:\n  - id: a\n    fetcher: http\n    security_selector: ".enter-btn"\n',
+            encoding="utf-8",
+        )
+        load_config(p)
+        assert "已忽略" in capsys.readouterr().out
+
+    def test_solve_cloudflare_defaults(self):
+        from crawler.config import BrowserConfig, StageConfig
+
+        assert BrowserConfig().solve_cloudflare is False
+        assert StageConfig(id="s").solve_cloudflare is None
+
+    def test_parse_solve_cloudflare(self, tmp_path):
+        from crawler.config import load_config
+
+        p = tmp_path / "solve_cloudflare.yaml"
+        p.write_text(
+            "name: t\nbrowser:\n  solve_cloudflare: true\nstages:\n"
+            "  - id: a\n    fetcher: stealthy\n    solve_cloudflare: true\n"
+            "  - id: b\n    fetcher: stealthy\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(p)
+        assert cfg.browser.solve_cloudflare is True
+        assert cfg.stages[0].solve_cloudflare is True
+        assert cfg.stages[1].solve_cloudflare is None

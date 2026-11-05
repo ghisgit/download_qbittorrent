@@ -12,7 +12,7 @@ COPY crawler ./crawler
 
 RUN uv pip install --system .
 
-RUN playwright install --with-deps chromium \
+RUN scrapling install \
     && chmod -R a+rX /ms-playwright
 
 RUN useradd --create-home --uid 1000 app \

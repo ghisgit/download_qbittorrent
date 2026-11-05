@@ -10,7 +10,7 @@ import crawler
 from .cache import HtmlCache
 from .config import CrawlerConfig, StageConfig, expand_urls
 from .extract import apply_compare, apply_filter, extract
-from .fetch import HttpxFetcher, PlaywrightFetcher
+from .fetch import HttpFetcher, StealthyFetcher
 from .qb import QBClient
 
 _URL_FORMAT_ERRORS = (KeyError, IndexError, AttributeError, TypeError, ValueError)
@@ -55,19 +55,19 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
     all_magnets: list[str] = []
 
     # Pre-launch long-lived fetchers and QB client
-    pw_fetcher = None
-    hx_fetcher = None
+    stealthy_fetcher = None
+    http_fetcher = None
     qb_client = None
-    needs_playwright = any(s.fetcher == "playwright" for s in config.stages)
-    needs_httpx = any(s.fetcher == "httpx" for s in config.stages)
+    needs_stealthy = any(s.fetcher == "stealthy" for s in config.stages)
+    needs_http = any(s.fetcher == "http" for s in config.stages)
     needs_qb = any(s.qb_send for s in config.stages)
 
-    if needs_playwright:
-        pw_fetcher = PlaywrightFetcher(config)
-        await pw_fetcher.__aenter__()
-    if needs_httpx:
-        hx_fetcher = HttpxFetcher(config)
-        await hx_fetcher.__aenter__()
+    if needs_stealthy:
+        stealthy_fetcher = StealthyFetcher(config)
+        await stealthy_fetcher.__aenter__()
+    if needs_http:
+        http_fetcher = HttpFetcher(config)
+        await http_fetcher.__aenter__()
     if needs_qb:
         qb_client = await QBClient(config.qb).__aenter__()
 
@@ -143,7 +143,7 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
                         print(f"  input: {url}")
 
             results: list[dict[str, Any]] = []
-            max_conc = stage.concurrency if stage.concurrency > 0 else (10 if stage.fetcher == "httpx" else 3)
+            max_conc = stage.concurrency if stage.concurrency > 0 else (3 if stage.fetcher == "stealthy" else 10)
             sem = asyncio.Semaphore(max_conc)
 
             async def process_one(item: dict[str, Any]) -> list[dict[str, Any]]:
@@ -165,10 +165,19 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
                         if html is not None and crawler.settings.verbose:
                             print(f"  [pipeline] 缓存命中: {url}")
                     if html is None:
-                        if stage.fetcher == "playwright" and pw_fetcher:
-                            html = await pw_fetcher.fetch(url, stage, sem)
-                        elif stage.fetcher == "httpx" and hx_fetcher:
-                            html = await hx_fetcher.fetch(url, stage, sem)
+                        if stage.fetcher == "stealthy":
+                            if stealthy_fetcher is None:
+                                print(f"  [pipeline] X stealthy fetcher 未初始化: {stage.id}")
+                                return []
+                            html = await stealthy_fetcher.fetch(url, stage, sem)
+                        elif stage.fetcher == "http":
+                            if http_fetcher is None:
+                                print(f"  [pipeline] X http fetcher 未初始化: {stage.id}")
+                                return []
+                            html = await http_fetcher.fetch(url, stage, sem)
+                        else:
+                            print(f"  [pipeline] X 未知 fetcher: {stage.fetcher}")
+                            return []
                         if html and cache_on:
                             html_cache.put(url, html)
 
@@ -249,10 +258,10 @@ async def run_pipeline(config: CrawlerConfig) -> list[str]:
                     all_magnets.extend(stage_magnets)
 
     finally:
-        if pw_fetcher:
-            await pw_fetcher.__aexit__(None, None, None)
-        if hx_fetcher:
-            await hx_fetcher.__aexit__(None, None, None)
+        if stealthy_fetcher:
+            await stealthy_fetcher.__aexit__(None, None, None)
+        if http_fetcher:
+            await http_fetcher.__aexit__(None, None, None)
         if qb_client:
             await qb_client.__aexit__(None, None, None)
 

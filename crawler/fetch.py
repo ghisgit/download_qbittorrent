@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import random
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
-import httpx
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
-from playwright_stealth import Stealth
+from scrapling.fetchers import AsyncStealthySession, FetcherSession
 
 import crawler
 
@@ -28,43 +28,122 @@ def save_debug_html(stage: StageConfig, url: str, html: str) -> None:
     print(f"  [fetch]  saved to debug_{stage.id}_{safe}.html")
 
 
-# ── Playwright fetcher ──────────────────────────────────────────────
+def _retry_settings(stage: StageConfig) -> tuple[int, set[int]]:
+    retry_cfg = stage.retry
+    if retry_cfg is None:
+        return 1, set()
+    return retry_cfg.max_retries, retry_cfg.retryable_codes
 
 
-class PlaywrightFetcher:
+def _retry_after(headers: Any) -> float | None:
+    """Read a numeric Retry-After header; ignore malformed values."""
+    try:
+        value = headers.get("Retry-After")
+    except Exception:
+        return None
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except TypeError, ValueError:
+        return None
+
+
+def _response_html(resp: Any) -> str:
+    html = resp.html_content
+    if isinstance(html, bytes):
+        return html.decode("utf-8", errors="replace")
+    return str(html or "")
+
+
+async def _sleep_before_retry(attempt: int, url: str, wait: float | None = None) -> None:
+    delay = wait if wait is not None else 2**attempt + random.random()
+    print(f"  [fetch] retry {url} after {delay:.1f}s")
+    await asyncio.sleep(delay)
+
+
+_PAGE_OPERATION_TIMEOUT_MS = 30000
+
+
+async def _tune_page_timeouts(page: Any) -> None:
+    """Cap page operation waits such as Cloudflare solver polling.
+
+    Scrapling uses the session timeout as the page's default timeout.  Our
+    session timeout stays at 120s for navigation, but the Cloudflare solver's
+    internal ``wait_for_networkidle``/``wait_for_load_state`` calls should not
+    each block for that long.  Navigation timeout is left untouched.
+    """
+    page.set_default_timeout(_PAGE_OPERATION_TIMEOUT_MS)
+
+
+# ── security gate automation ────────────────────────────────────────
+
+
+def handle_verify(selector: str = ".enter-btn") -> Callable[[Any], Awaitable[Any]]:
+    """Build a Scrapling ``page_action`` that clicks a security/age gate.
+
+    The action waits for the initial page to reach network-idle, then looks for
+    the configured button.  If the button is absent or hidden, the page needs
+    no verification and is returned unchanged.
+    """
+
+    async def action(page: Any) -> Any:
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception as e:
+            print(f"  [stealthy] 等待 networkidle 超时: {e}")
+
+        try:
+            button = await page.query_selector(selector)
+            if button is None or not await button.is_visible():
+                return page
+        except Exception as e:
+            print(f"  [stealthy] 查找安全验证按钮异常: {e}")
+            return page
+
+        print("  [stealthy] 点击安全验证按钮")
+        try:
+            await button.click()
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception as e:
+            print(f"  [stealthy] 安全验证按钮点击异常: {e}")
+        return page
+
+    return action
+
+
+# ── Scrapling StealthySession fetcher ───────────────────────────────
+
+
+class StealthyFetcher:
     def __init__(self, config: CrawlerConfig):
         self.config = config
-        self._pw_cm = None
-        self._browser: Browser | None = None
-        self._context: BrowserContext | None = None
+        self._session: AsyncStealthySession | None = None
+        concurrency = [
+            stage.concurrency if stage.concurrency > 0 else 3 for stage in config.stages if stage.fetcher == "stealthy"
+        ]
+        self._max_pages = max([5, *concurrency])
 
     async def __aenter__(self):
-        stealth = Stealth()
-        self._pw_cm = stealth.use_async(async_playwright())
-        p = await self._pw_cm.__aenter__()
-        self._browser = await p.chromium.launch(
+        session = AsyncStealthySession(
             headless=self.config.browser.headless,
-            args=self.config.browser.args,
+            extra_flags=self.config.browser.args,
+            solve_cloudflare=self.config.browser.solve_cloudflare,
+            timeout=120000,
+            retries=1,
+            max_pages=self._max_pages,
         )
-        self._context = await self._browser.new_context()
+        await session.start()
+        self._session = session
         return self
 
     async def __aexit__(self, *args):
-        try:
-            if self._context:
-                await self._context.close()
-        except Exception as e:
-            print(f"  [playwright] context close error: {e}")
-        try:
-            if self._browser:
-                await self._browser.close()
-        except Exception as e:
-            print(f"  [playwright] browser close error: {e}")
-        try:
-            if self._pw_cm:
-                await self._pw_cm.__aexit__(*args)
-        except Exception as e:
-            print(f"  [playwright] playwright close error: {e}")
+        if self._session is not None:
+            try:
+                await self._session.close()
+            except Exception as e:
+                print(f"  [stealthy] close error: {e}")
+            self._session = None
 
     async def fetch(
         self,
@@ -72,121 +151,109 @@ class PlaywrightFetcher:
         stage: StageConfig,
         sem: asyncio.Semaphore,
     ) -> str:
-        retry_cfg = stage.retry
-        max_retries = retry_cfg.max_retries if retry_cfg else 1
-        retryable = retry_cfg.retryable_codes if retry_cfg else set()
+        max_retries, retryable = _retry_settings(stage)
+        page_action = handle_verify(stage.security_selector) if stage.security_selector else None
+        solve_cloudflare = (
+            stage.solve_cloudflare if stage.solve_cloudflare is not None else self.config.browser.solve_cloudflare
+        )
 
         for attempt in range(max_retries):
-            should_retry = False
-            async with sem:
-                print(f"  [fetch] playwright GET {url}  (attempt {attempt + 1}/{max_retries})")
-                if self._context is None:
-                    raise RuntimeError("Playwright context not initialized")
-                page = await self._context.new_page()
-                try:
-                    try:
-                        resp = await page.goto(url, wait_until="domcontentloaded", timeout=120000)
-                    except Exception as e:
-                        print(f"  [fetch] error {url}: {e}")
-                        should_retry = True
-                    if should_retry:
-                        pass
-                    elif resp is not None and resp.status in retryable:
+            try:
+                async with sem:
+                    print(f"  [fetch] stealthy GET {url}  (attempt {attempt + 1}/{max_retries})")
+                    session = self._session
+                    if session is None:
+                        raise RuntimeError("StealthySession not initialized")
+
+                    kwargs: dict[str, Any] = {
+                        "solve_cloudflare": solve_cloudflare,
+                        "page_setup": _tune_page_timeouts,
+                    }
+                    if page_action is not None:
+                        kwargs["page_action"] = page_action
+                    if stage.headers:
+                        kwargs["extra_headers"] = stage.headers
+
+                    resp = await session.fetch(url, **kwargs)
+                    if resp.status in retryable:
                         print(f"  [fetch] HTTP {resp.status} {url}")
-                        should_retry = True
                     else:
-                        if stage.security:
-                            await self._handle_security(page, stage)
-                        html = await page.content()
-                        print(f"  [fetch] -> {len(html)} bytes")
+                        html = _response_html(resp)
+                        print(f"  [fetch] -> HTTP {resp.status}, {len(html)} bytes")
                         if debug_enabled(stage):
                             save_debug_html(stage, url, html)
                         return html
-                finally:
-                    await page.close()
-            if should_retry:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt + random.random())
-                else:
-                    return ""
+            except Exception as e:
+                print(f"  [fetch] error {url}: {e}")
+
+            if attempt < max_retries - 1:
+                await _sleep_before_retry(attempt, url)
+
         return ""
 
-    async def _handle_security(self, page: Page, stage: StageConfig) -> None:
-        if not stage.security_selector:
-            return
-        try:
-            btn = await page.wait_for_selector(stage.security_selector, timeout=1000)
-        except Exception:
-            return  # no security gate on this page
-        try:
-            if btn:
-                print("  [playwright] 点击安全验证按钮")
-                await btn.click()
-                await page.wait_for_load_state("networkidle", timeout=10000)
-                await asyncio.sleep(2)
-                print("  [playwright] 刷新页面")
-                await page.reload(wait_until="domcontentloaded", timeout=120000)
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=10000)
-                    await asyncio.sleep(2)
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"  [playwright] 安全验证按钮点击异常: {e}")
+
+# ── Scrapling FetcherSession fetcher ────────────────────────────────
 
 
-# ── HTTPX fetcher ───────────────────────────────────────────────────
-
-
-class HttpxFetcher:
+class HttpFetcher:
     def __init__(self, config: CrawlerConfig):
         self.config = config
-        self._client: httpx.AsyncClient | None = None
+        self._manager: FetcherSession | None = None
+        self._session: Any = None
 
     async def __aenter__(self):
-        limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
-        self._client = await httpx.AsyncClient(limits=limits, timeout=15.0).__aenter__()
+        manager = FetcherSession(timeout=15, retries=1)
+        self._session = await manager.__aenter__()
+        self._manager = manager
         return self
 
     async def __aexit__(self, *args):
-        if self._client:
-            await self._client.__aexit__(*args)
+        if self._manager is not None:
+            try:
+                await self._manager.__aexit__(*args)
+            except Exception as e:
+                print(f"  [http] close error: {e}")
+            self._manager = None
+            self._session = None
 
     async def fetch(
         self,
         url: str,
         stage: StageConfig,
         sem: asyncio.Semaphore,
-    ) -> str | None:
-        retry_cfg = stage.retry
-        max_retries = retry_cfg.max_retries if retry_cfg else 1
-        retryable = retry_cfg.retryable_codes if retry_cfg else set()
+    ) -> str:
+        max_retries, retryable = _retry_settings(stage)
 
         for attempt in range(max_retries):
+            retry_after: float | None = None
             try:
                 async with sem:
-                    print(f"  [fetch] httpx GET {url}  (attempt {attempt + 1}/{max_retries})")
-                    if self._client is None:
-                        raise RuntimeError("HTTPX client not initialized")
-                    resp = await self._client.get(url, headers=stage.headers)
-                    resp.raise_for_status()
-                    print(f"  [fetch] -> HTTP {resp.status_code}, {len(resp.text)} bytes")
-                    if debug_enabled(stage):
-                        save_debug_html(stage, url, resp.text)
-                    return resp.text
-            except httpx.HTTPStatusError as e:
-                code = e.response.status_code
-                print(f"  [fetch] HTTP {code} {url}")
-                if code in retryable and attempt < max_retries - 1:
-                    wait = float(e.response.headers.get("Retry-After", 2**attempt + random.random()))
-                    print(f"  [fetch] retry {url} after {wait:.1f}s")
-                    await asyncio.sleep(wait)
-                    continue
-                return None
-            except httpx.RequestError as e:
+                    print(f"  [fetch] http GET {url}  (attempt {attempt + 1}/{max_retries})")
+                    session = self._session
+                    if session is None:
+                        raise RuntimeError("FetcherSession not initialized")
+
+                    kwargs: dict[str, Any] = {}
+                    if stage.headers:
+                        kwargs["headers"] = stage.headers
+
+                    resp = await session.get(url, **kwargs)
+                    if resp.status in retryable:
+                        print(f"  [fetch] HTTP {resp.status} {url}")
+                        retry_after = _retry_after(resp.headers)
+                    elif resp.status >= 400:
+                        print(f"  [fetch] HTTP {resp.status} {url}")
+                        return ""
+                    else:
+                        html = _response_html(resp)
+                        print(f"  [fetch] -> HTTP {resp.status}, {len(html)} bytes")
+                        if debug_enabled(stage):
+                            save_debug_html(stage, url, html)
+                        return html
+            except Exception as e:
                 print(f"  [fetch] error {url}: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2**attempt + random.random())
-                    continue
-                return None
-        return None
+
+            if attempt < max_retries - 1:
+                await _sleep_before_retry(attempt, url, retry_after)
+
+        return ""

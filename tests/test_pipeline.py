@@ -28,7 +28,7 @@ def _patch_fetch(monkeypatch):
         calls.append(url)
         return f"<html>{url}</html>"
 
-    monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+    monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
     return calls
 
 
@@ -40,7 +40,7 @@ def _seed_config(cache_enabled: bool, cache_dir: str, stage_cache=None) -> Crawl
             StageConfig(
                 id="seed",
                 urls=["http://example.com/a", "http://example.com/b"],
-                fetcher="httpx",
+                fetcher="http",
                 cache=stage_cache,
             )
         ],
@@ -84,9 +84,9 @@ class TestMultiInputDedupLog:
             name="t",
             cache=CacheConfig(enabled=False, dir=str(tmp_path)),
             stages=[
-                StageConfig(id="a", urls=["http://example.com/same"], fetcher="httpx"),
-                StageConfig(id="b", urls=["http://example.com/same"], fetcher="httpx"),
-                StageConfig(id="c", input=["a", "b"], fetcher="httpx"),
+                StageConfig(id="a", urls=["http://example.com/same"], fetcher="http"),
+                StageConfig(id="b", urls=["http://example.com/same"], fetcher="http"),
+                StageConfig(id="c", input=["a", "b"], fetcher="http"),
             ],
         )
         asyncio.run(run_pipeline(cfg))
@@ -106,7 +106,7 @@ class TestMultiInputTargetUrlDedup:
             calls.append(url)
             return html_by_url.get(url, "<html></html>")
 
-        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+        monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
 
         cfg = CrawlerConfig(
             name="t",
@@ -114,19 +114,19 @@ class TestMultiInputTargetUrlDedup:
                 StageConfig(
                     id="a",
                     urls=["http://example.com/a"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
                 ),
                 StageConfig(
                     id="b",
                     urls=["http://example.com/b"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
                 ),
                 StageConfig(
                     id="c",
                     input=["a", "b"],
-                    fetcher="httpx",
+                    fetcher="http",
                     url_pattern="http://example.com/detail/{group_0}",
                 ),
             ],
@@ -150,7 +150,7 @@ class TestMultiInputTargetUrlDedup:
             calls.append(url)
             return html_by_url.get(url, "<html></html>")
 
-        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+        monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
 
         cfg = CrawlerConfig(
             name="t",
@@ -158,19 +158,19 @@ class TestMultiInputTargetUrlDedup:
                 StageConfig(
                     id="a",
                     urls=["http://example.com/a"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[ExtractConfig(type="css", selector="a", attribute="href", multiple=True)],
                 ),
                 StageConfig(
                     id="b",
                     urls=["http://example.com/b"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[ExtractConfig(type="css", selector="a", attribute="href", multiple=True)],
                 ),
                 StageConfig(
                     id="c",
                     input=["a", "b"],
-                    fetcher="httpx",
+                    fetcher="http",
                     url_pattern="{text}",
                 ),
             ],
@@ -188,7 +188,7 @@ class TestMultiInputTargetUrlDedup:
         async def fake_fetch(self, url: str, stage, sem) -> str:
             return html
 
-        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+        monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
 
         cfg = CrawlerConfig(
             name="t",
@@ -196,16 +196,16 @@ class TestMultiInputTargetUrlDedup:
                 StageConfig(
                     id="a",
                     urls=["http://example.com/a"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
                 ),
                 StageConfig(
                     id="b",
                     urls=["http://example.com/b"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
                 ),
-                StageConfig(id="c", input=["a", "b"], fetcher="httpx"),
+                StageConfig(id="c", input=["a", "b"], fetcher="http"),
             ],
         )
 
@@ -225,7 +225,7 @@ class TestMultiInputTargetUrlDedup:
             calls.append(url)
             return html_by_url.get(url, "<html></html>")
 
-        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+        monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
 
         cfg = CrawlerConfig(
             name="t",
@@ -233,25 +233,25 @@ class TestMultiInputTargetUrlDedup:
                 StageConfig(
                     id="a",
                     urls=["http://example.com/a"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
                 ),
                 StageConfig(
                     id="b",
                     urls=["http://example.com/b"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[ExtractConfig(type="regex", pattern=r'data-id="(\d+)"')],
                 ),
                 StageConfig(
                     id="c",
                     input=["a", "b"],
-                    fetcher="httpx",
+                    fetcher="http",
                     url_pattern="http://example.com/c/{group_0}",
                 ),
                 StageConfig(
                     id="d",
                     input="a",
-                    fetcher="httpx",
+                    fetcher="http",
                     url_pattern="http://example.com/d/{group_0}",
                 ),
             ],
@@ -353,7 +353,7 @@ class TestQBSendFilterAndCategory:
         async def fake_fetch(self, url: str, stage, sem) -> str:
             return html_by_url[url]
 
-        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+        monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
 
         added: list[tuple[str, list[str]]] = []
 
@@ -370,7 +370,7 @@ class TestQBSendFilterAndCategory:
                 StageConfig(
                     id="magnets",
                     urls=list(html_by_url),
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[
                         ExtractConfig(
                             type="regex",
@@ -399,7 +399,7 @@ class TestQBSendFilterAndCategory:
                 return '<a data-id="7" data-name="Anime">item</a>'
             return '<a data-magnet="magnet:?xt=urn:btih:aaa">item</a>'
 
-        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+        monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
 
         added: list[tuple[str, list[str]]] = []
 
@@ -416,7 +416,7 @@ class TestQBSendFilterAndCategory:
                 StageConfig(
                     id="list",
                     urls=["http://example.com/list"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[
                         ExtractConfig(
                             type="regex",
@@ -429,7 +429,7 @@ class TestQBSendFilterAndCategory:
                 StageConfig(
                     id="magnets",
                     input="list",
-                    fetcher="httpx",
+                    fetcher="http",
                     url_pattern="http://example.com/detail/{group_0}",
                     extracts=[
                         ExtractConfig(
@@ -464,7 +464,7 @@ class TestFilterPlaceholderPipeline:
             ident = url.rsplit("/", 1)[-1]
             return f'<a class="magnet" href="magnet:{ident}"></a>'
 
-        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+        monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
 
         added: list[tuple[str, list[str]]] = []
 
@@ -481,7 +481,7 @@ class TestFilterPlaceholderPipeline:
                 StageConfig(
                     id="list",
                     urls=["http://example.com/list"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[
                         ExtractConfig(
                             type="regex",
@@ -494,7 +494,7 @@ class TestFilterPlaceholderPipeline:
                 StageConfig(
                     id="magnets",
                     input="list",
-                    fetcher="httpx",
+                    fetcher="http",
                     url_pattern="http://example.com/detail/{group_2}",
                     extracts=[
                         ExtractConfig(
@@ -533,7 +533,7 @@ class TestComparePipeline:
         async def fake_fetch(self, url: str, stage, sem) -> str:
             return html
 
-        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+        monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
 
         added: list[tuple[str, list[str]]] = []
 
@@ -550,7 +550,7 @@ class TestComparePipeline:
                 StageConfig(
                     id="magnets",
                     urls=["http://example.com/a"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[
                         ExtractConfig(
                             type="regex",
@@ -577,7 +577,7 @@ class TestComparePipeline:
         async def fake_fetch(self, url: str, stage, sem) -> str:
             return '<a data-name="A" data-magnet="magnet:a">'
 
-        monkeypatch.setattr("crawler.fetch.HttpxFetcher.fetch", fake_fetch)
+        monkeypatch.setattr("crawler.fetch.HttpFetcher.fetch", fake_fetch)
 
         called: list[int] = []
 
@@ -594,7 +594,7 @@ class TestComparePipeline:
                 StageConfig(
                     id="magnets",
                     urls=["http://example.com/a"],
-                    fetcher="httpx",
+                    fetcher="http",
                     extracts=[
                         ExtractConfig(
                             type="regex",
